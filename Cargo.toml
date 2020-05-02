@@ -15,3 +15,6 @@ readme = "README.md"
 async-std = { version = "1.5.0", features = ["unstable"] }
 pergola = "0.5.0"
 itertools = "0.9.0"
+
+[dev-dependencies]
+futures = "0.3.4"

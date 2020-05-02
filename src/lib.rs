@@ -205,7 +205,7 @@ where ObjLD::T : Clone+Debug+Default
 ///
 ///   - Broadcast `Commit` messages sent to all peers.
 ///
-#[derive(Clone,Debug)]
+#[derive(Debug)]
 pub enum Message<ObjLD: LatticeDef,
                  Peer: Ord+Clone+Debug+Default>
 where ObjLD::T : Clone+Debug+Default
@@ -214,6 +214,28 @@ where ObjLD::T : Clone+Debug+Default
     Response{seq: u64, from: Peer, to: Peer, opinion: Opinion<ObjLD,Peer>},
     Commit(StateLE<ObjLD,Peer>)
 }
+
+// #[derive(Clone)] no working here either, sigh.
+impl<ObjLD: LatticeDef,
+     Peer: Ord+Clone+Debug+Default>
+    std::clone::Clone
+    for Message<ObjLD,Peer>
+where ObjLD::T : Clone+Debug+Default
+{
+    fn clone(&self) -> Self
+    {
+        match self {
+            Message::Request{seq,from,to,opinion} =>
+                Message::Request{seq:*seq,from:from.clone(),
+                                 to:to.clone(),opinion:opinion.clone()},
+            Message::Response{seq,from,to,opinion} =>
+                Message::Response{seq:*seq,from:from.clone(),
+                                  to:to.clone(),opinion:opinion.clone()},
+            Message::Commit(s) => Message::Commit(s.clone())
+        }
+    }
+}
+
 
 /// `Participant`s represent parties participating in lattice agreement. They
 /// support a single public asynchronous operation `propose` that returns
@@ -249,6 +271,25 @@ where ObjLD::T : Clone+Debug+Default
     id: Peer,
     sender: Sender<Message<ObjLD,Peer>>,
     receiver: Receiver<Message<ObjLD,Peer>>
+}
+
+impl<ObjLD: LatticeDef,
+     Peer: Ord+Clone+Debug+Default>
+    std::clone::Clone
+    for Participant<ObjLD,Peer>
+where ObjLD::T : Clone+Debug+Default
+{
+    fn clone(&self) -> Self
+    {
+        Participant {
+            sequence: self.sequence,
+            opinion: self.opinion.clone(),
+            sequence_responses: self.sequence_responses.clone(),
+            id: self.id.clone(),
+            sender: self.sender.clone(),
+            receiver: self.receiver.clone()
+        }
+    }
 }
 
 
@@ -467,4 +508,112 @@ fn members_of_cfgs<Peer: Ord+Clone+Debug+Default>(cfgs: &BTreeSet<CfgLE<Peer>>) 
         u = u.union(&c.members()).cloned().collect()
     }
     u
+}
+
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+    use pergola::MaxDef;
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+    use async_std::task;
+    use futures::stream::{StreamExt,FuturesUnordered};
+    use async_std::sync::channel;
+    use std::println;
+
+    type Peer = String;
+    type ObjLD = MaxDef<u16>;
+    type ObjLE = LatticeElt<ObjLD>;
+    type Msg = Message<ObjLD,Peer>;
+    #[derive(Clone)]
+    struct PeerRecord {
+        sender: Sender<Msg>,
+        receiver: Receiver<Msg>,
+        participant: RefCell<Option<Participant<ObjLD,Peer>>>
+    }
+
+    #[derive(Default)]
+    struct Network {
+        peers: BTreeMap<Peer,PeerRecord>
+    }
+
+    impl Network {
+        fn add_peer(&mut self, id: Peer) {
+            let (s_n2p,r_n2p) = channel(5);
+            let (s_p2n,r_p2n) = channel(5);
+            let p = Participant::new(id, s_p2n, r_n2p);
+            self.peers.insert(p.id.clone(),
+                              PeerRecord {
+                                  sender: s_n2p,
+                                  receiver: r_p2n,
+                                  participant: RefCell::new(Some(p))
+                              });
+        }
+        async fn step(&mut self) -> bool {
+            let mut fut = FuturesUnordered::new();
+            for (id, p) in self.peers.iter() {
+                fut.push(p.receiver.recv());
+            }
+            if let Some(Some(msg)) = fut.next().await {
+                match &msg {
+                    Message::Request{seq, from, to, ..} |
+                    Message::Response{seq, from, to, ..}
+                    =>
+                    {
+                        match self.peers.get(to) {
+                            None => false,
+                            Some(p) => {
+                                println!("point-to-point send #{} {} -> {}",
+                                         seq, from, to);
+                                p.sender.send(msg.clone()).await;
+                                true
+                            }
+                        }
+                    }
+                    Message::Commit(_) =>
+                    {
+                        for (id, p) in self.peers.iter() {
+                            println!("broadcast send to {}", id);
+                            p.sender.send(msg.clone()).await;
+                        }
+                        true
+                    }
+                }
+            }
+            else
+            {
+                false
+            }
+        }
+        async fn run(&mut self) {
+            let mut cfg = CfgLE::default();
+            for id in self.peers.keys() {
+                println!("created peer {}", id);
+                cfg.added_peers_mut().insert(id.clone());
+            }
+            let mut obj = ObjLE::default();
+            for (id, p) in self.peers.iter() {
+                obj.value += 1;
+                let state = StateLE::new_from((obj.clone(), cfg.clone()));
+                let mut part = p.participant.replace(None).unwrap();
+                println!("spawned peer {}", id);
+                task::spawn(async move { part.propose(&state).await });
+            }
+            while self.step().await {
+                println!("stepped");
+                ()
+            }
+        }
+    }
+
+    #[test]
+    fn run_sim() {
+        let mut n = Network::default();
+        n.add_peer("a".into());
+        n.add_peer("b".into());
+        n.add_peer("c".into());
+        task::block_on(async { n.run().await })
+    }
 }
