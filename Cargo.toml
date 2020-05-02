@@ -1,7 +1,7 @@
 [package]
 name = "concorde"
 description = "reconfigurable lattice agreement"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Graydon Hoare <graydon@pobox.com>"]
 edition = "2018"
 license = "MIT OR Apache-2.0"
@@ -15,6 +15,9 @@ readme = "README.md"
 async-std = { version = "1.5.0", features = ["unstable"] }
 pergola = "0.5.0"
 itertools = "0.9.0"
+log = "0.4"
+thiserror = "1.0"
 
 [dev-dependencies]
 futures = "0.3.4"
+pretty_env_logger = "0.4"

@@ -6,9 +6,9 @@
  * consensus-like algorithm called "reconfigurable lattice agreement", which has
  * some desirable properties:
  *
- *   - It's small, fast and simple compared with other consensus-like
- *     algorithms. Few states, message types and round-trips. The paper
- *     introducing it describes it in 20 lines of pseudocode.
+ *   - It's asynchronous, small, fast and simple compared with other
+ *     consensus-like algorithms. Few states, message types and round-trips. The
+ *     paper introducing it describes it in 20 lines of pseudocode.
  *
  *   - It supports _online reconfiguration_ without any separate phases: you can
  *     add or subtract peers while it's running and it adapts to the changed
@@ -50,8 +50,7 @@
  * > equivalent, concord. Both words mean agreement, harmony or union.
  */
 
-// TODO: tests & fix bugs.
-// TODO: error handling, timeouts, get rid of that unwrap().
+// TODO: timeouts?
 // TODO: add a trim watermark to CfgLD so it's not ever-growing.
 
 use pergola::*;
@@ -59,6 +58,8 @@ use std::collections::{BTreeSet};
 use std::fmt::Debug;
 use async_std::sync::{Sender,Receiver};
 use itertools::Itertools;
+use log::{debug,trace};
+use thiserror::Error;
 
 /// `Cfg` is one of the two base lattices we work with (the other is the
 /// user-provided so-called `Obj` object-value lattice). Cfg represents the
@@ -196,15 +197,9 @@ where ObjLD::T : Clone+Debug+Default
     }
 }
 
-/// Messages are either:
-///
-///   - Unidirectional point-to-point `Request`s with
-///     matching `Response`s (related by sequence number)
-///
-///  or
-///
-///   - Broadcast `Commit` messages sent to all peers.
-///
+/// Messages are either unidirectional point-to-point requests
+/// or responses (matched by sequence number) or broadcast
+/// commit messages sent to all peers.
 #[derive(Debug)]
 pub enum Message<ObjLD: LatticeDef,
                  Peer: Ord+Clone+Debug+Default>
@@ -212,7 +207,7 @@ where ObjLD::T : Clone+Debug+Default
 {
     Request{seq: u64, from: Peer, to: Peer, opinion: Opinion<ObjLD,Peer>},
     Response{seq: u64, from: Peer, to: Peer, opinion: Opinion<ObjLD,Peer>},
-    Commit(StateLE<ObjLD,Peer>)
+    Commit{from: Peer, state: StateLE<ObjLD,Peer>}
 }
 
 // #[derive(Clone)] no working here either, sigh.
@@ -231,7 +226,8 @@ where ObjLD::T : Clone+Debug+Default
             Message::Response{seq,from,to,opinion} =>
                 Message::Response{seq:*seq,from:from.clone(),
                                   to:to.clone(),opinion:opinion.clone()},
-            Message::Commit(s) => Message::Commit(s.clone())
+            Message::Commit{from,state} => Message::Commit{from:from.clone(),
+                                                           state:state.clone()}
         }
     }
 }
@@ -292,6 +288,12 @@ where ObjLD::T : Clone+Debug+Default
     }
 }
 
+#[derive(Error,Debug)]
+pub enum Error
+{
+    #[error("disconnected")]
+    Disconnected
+}
 
 impl<ObjLD:LatticeDef,
      Peer:Ord+Clone+Debug+Default>
@@ -337,7 +339,7 @@ where ObjLD::T : Clone+Debug+Default
     {
         match m
         {
-            Message::Request{seq, from, to: _, opinion} =>
+            Message::Request{seq, from, opinion, ..} =>
             {
                 self.update_state(opinion);
                 let resp = Message::Response
@@ -349,7 +351,7 @@ where ObjLD::T : Clone+Debug+Default
                 };
                 self.sender.send(resp).await;
             }
-            Message::Response{seq, from, to: _, opinion} =>
+            Message::Response{seq, from, opinion, ..} =>
             {
                 self.update_state(opinion);
                 if *seq == self.sequence
@@ -357,7 +359,7 @@ where ObjLD::T : Clone+Debug+Default
                     self.sequence_responses.insert(from.clone());
                 }
             }
-            Message::Commit(state) =>
+            Message::Commit{state, ..} =>
             {
                 let mut committed_opinion = Opinion::default();
                 committed_opinion.estimated_commit = state.clone();
@@ -407,6 +409,7 @@ where ObjLD::T : Clone+Debug+Default
     fn advance_seq(&mut self)
     {
         self.sequence += 1;
+        trace!("peer {:?} advanced seq to #{}", self.id, self.sequence);
         self.sequence_responses.clear();
     }
 
@@ -420,15 +423,29 @@ where ObjLD::T : Clone+Debug+Default
             let quorum_size = (members.len() / 2) + 1;
             let members_responded =
                 self.sequence_responses.intersection(&members).count();
-            if members_responded < quorum_size
+            let members_concurring = 1 /*self*/ + members_responded;
+            if members_concurring < quorum_size
             {
+                trace!("peer {:?} does not have quorum", self.id);
                 return false;
             }
         }
+        trace!("peer {:?} has quorum", self.id);
         true
     }
 
-    pub async fn propose(&mut self, prop: &StateLE<ObjLD,Peer>) -> StateLE<ObjLD,Peer>
+    pub async fn idle(&mut self) -> Result<(),Error>
+    {
+        match self.receiver.recv().await {
+            None => Err(Error::Disconnected),
+            Some(msg) => {
+                self.receive(&msg).await;
+                Ok(())
+            }
+        }
+    }
+
+    pub async fn propose(&mut self, prop: &StateLE<ObjLD,Peer>) -> Result<StateLE<ObjLD,Peer>,Error>
     {
         let prop_opinion = Opinion
         {
@@ -438,7 +455,8 @@ where ObjLD::T : Clone+Debug+Default
         };
         self.update_state(&prop_opinion);
         let mut learn_lower_bound : Option<StateLE<ObjLD,Peer>> = None;
-        loop
+        let mut connected = true;
+        while connected
         {
             self.advance_seq();
             let old_opinion = self.opinion.clone();
@@ -446,6 +464,9 @@ where ObjLD::T : Clone+Debug+Default
             let all_members = members_of_cfgs(&cfgs);
             for peer in all_members
             {
+                if peer == self.id {
+                    continue;
+                }
                 let req = Message::Request
                 {
                     seq: self.sequence,
@@ -457,9 +478,13 @@ where ObjLD::T : Clone+Debug+Default
             }
             while (old_opinion.estimated_commit.config() ==
                    self.opinion.estimated_commit.config())
-                || self.have_quorum(&cfgs)
+                && !self.have_quorum(&cfgs)
             {
-                self.receive(&self.receiver.recv().await.unwrap()).await
+                trace!("peer {:?} waiting for message", self.id);
+                match self.receiver.recv().await {
+                    None => connected = false,
+                    Some(msg) => self.receive(&msg).await,
+                }
             }
 
             // Stable configuration.
@@ -468,6 +493,7 @@ where ObjLD::T : Clone+Debug+Default
                 (old_opinion.proposed_configs ==
                  self.opinion.proposed_configs)
             {
+                debug!("peer {:?} found stable configuration", self.id);
                 let cstate = self.commit_state();
                 if learn_lower_bound == None
                 {
@@ -476,9 +502,10 @@ where ObjLD::T : Clone+Debug+Default
                 // No greater object received.
                 if old_opinion.candidate_object == self.opinion.candidate_object
                 {
-                    let broadcast = Message::Commit(cstate.clone());
+                    debug!("peer {:?} stable config has stable object, broadcasting and returning", self.id);
+                    let broadcast = Message::Commit{from: self.id.clone(), state: cstate.clone()};
                     self.sender.send(broadcast).await;
-                    return cstate;
+                    return Ok(cstate);
                 }
             }
             match learn_lower_bound
@@ -486,11 +513,13 @@ where ObjLD::T : Clone+Debug+Default
                 Some(state) if state <= self.opinion.estimated_commit =>
                 {
                     // Adopt learned state.
-                    return self.opinion.estimated_commit.clone();
+                    debug!("peer {:?} stable config has acceptable lower bound, returning", self.id);
+                    return Ok(self.opinion.estimated_commit.clone());
                 }
                 _ => ()
             }
         }
+        return Err(Error::Disconnected)
     }
 }
 
@@ -514,14 +543,14 @@ fn members_of_cfgs<Peer: Ord+Clone+Debug+Default>(cfgs: &BTreeSet<CfgLE<Peer>>) 
 #[cfg(test)]
 mod tests {
 
+    use pretty_env_logger;
     use super::*;
     use pergola::MaxDef;
-    use std::cell::RefCell;
     use std::collections::BTreeMap;
     use async_std::task;
+    use futures::FutureExt;
     use futures::stream::{StreamExt,FuturesUnordered};
-    use async_std::sync::channel;
-    use std::println;
+    use async_std::sync::{Arc,Mutex,channel};
 
     type Peer = String;
     type ObjLD = MaxDef<u16>;
@@ -531,85 +560,109 @@ mod tests {
     struct PeerRecord {
         sender: Sender<Msg>,
         receiver: Receiver<Msg>,
-        participant: RefCell<Option<Participant<ObjLD,Peer>>>
+        participant: Arc<Mutex<Participant<ObjLD,Peer>>>,
     }
 
     #[derive(Default)]
     struct Network {
-        peers: BTreeMap<Peer,PeerRecord>
+        peers: BTreeMap<Peer,PeerRecord>,
+        num_finished: Arc<Mutex<usize>>
     }
 
     impl Network {
         fn add_peer(&mut self, id: Peer) {
-            let (s_n2p,r_n2p) = channel(5);
-            let (s_p2n,r_p2n) = channel(5);
+            let (s_n2p,r_n2p) = channel(15);
+            let (s_p2n,r_p2n) = channel(15);
             let p = Participant::new(id, s_p2n, r_n2p);
             self.peers.insert(p.id.clone(),
                               PeerRecord {
                                   sender: s_n2p,
                                   receiver: r_p2n,
-                                  participant: RefCell::new(Some(p))
+                                  participant: Arc::new(Mutex::new(p))
                               });
         }
-        async fn step(&mut self) -> bool {
+        async fn step(&mut self) {
             let mut fut = FuturesUnordered::new();
             for (id, p) in self.peers.iter() {
-                fut.push(p.receiver.recv());
+                let r = p.receiver.recv();
+                let idc = id.clone();
+                let idr = r.map(move |chr| (idc, chr));
+                fut.push(idr);
             }
-            if let Some(Some(msg)) = fut.next().await {
-                match &msg {
-                    Message::Request{seq, from, to, ..} |
-                    Message::Response{seq, from, to, ..}
-                    =>
-                    {
-                        match self.peers.get(to) {
-                            None => false,
-                            Some(p) => {
-                                println!("point-to-point send #{} {} -> {}",
-                                         seq, from, to);
+            let next = fut.next().await;
+            match next {
+                None => {
+                    panic!("all channels closed");
+                }
+                Some((id, None)) => {
+                    panic!("channel for {} closed", id);
+                }
+                Some((_, Some(msg))) => {
+                    match &msg {
+                        Message::Request{seq, from, to, ..} |
+                        Message::Response{seq, from, to, ..}
+                        =>
+                        {
+                            let n = if let Message::Request{..} = msg
+                            { "request" } else { "response"};
+                            match self.peers.get(to) {
+                                None => (),
+                                Some(p) => {
+                                    debug!("point-to-point send {} #{} {} -> {}",
+                                           n, seq, from, to);
+                                    p.sender.send(msg.clone()).await;
+                                }
+                            }
+                        }
+                        Message::Commit{from,..} =>
+                        {
+                            for (id, p) in self.peers.iter() {
+                                debug!("broadcast {} send to {}", from, id);
                                 p.sender.send(msg.clone()).await;
-                                true
                             }
                         }
                     }
-                    Message::Commit(_) =>
-                    {
-                        for (id, p) in self.peers.iter() {
-                            println!("broadcast send to {}", id);
-                            p.sender.send(msg.clone()).await;
-                        }
-                        true
-                    }
                 }
             }
-            else
-            {
-                false
-            }
+        }
+        async fn all_finished(&self) -> bool {
+            let n = *self.num_finished.lock().await;
+            n == self.peers.len()
         }
         async fn run(&mut self) {
             let mut cfg = CfgLE::default();
             for id in self.peers.keys() {
-                println!("created peer {}", id);
+                debug!("created peer {}", id);
                 cfg.added_peers_mut().insert(id.clone());
             }
-            let mut obj = ObjLE::default();
+            let mut obj = ObjLE::new_from(1000);
             for (id, p) in self.peers.iter() {
                 obj.value += 1;
                 let state = StateLE::new_from((obj.clone(), cfg.clone()));
-                let mut part = p.participant.replace(None).unwrap();
-                println!("spawned peer {}", id);
-                task::spawn(async move { part.propose(&state).await });
+                let part = p.participant.clone();
+                let nf = self.num_finished.clone();
+                let n = self.peers.len();
+                debug!("spawned peer {}", id);
+                let id = id.clone();
+                task::spawn(async move {
+                    let r = part.lock().await.propose(&state).await;
+                    debug!("peer {} proposed {:?}", id, state);
+                    debug!("peer {} result {:?}", id, r);
+                    *nf.lock().await += 1;
+                    while *nf.lock().await != n {
+                        let _ = part.lock().await.idle().await;
+                    }
+                });
             }
-            while self.step().await {
-                println!("stepped");
-                ()
+            while !self.all_finished().await {
+                self.step().await;
             }
         }
     }
 
     #[test]
     fn run_sim() {
+        pretty_env_logger::init();
         let mut n = Network::default();
         n.add_peer("a".into());
         n.add_peer("b".into());
