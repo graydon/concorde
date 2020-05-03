@@ -51,6 +51,8 @@
  */
 
 // TODO: timeouts?
+// TODO: lots more testing.
+// TODO: add mechanism to approve/disapprove of specific quorums.
 // TODO: add a trim watermark to CfgLD so it's not ever-growing.
 
 use pergola::*;
@@ -156,10 +158,27 @@ where ObjLD::T : Clone+Debug+Default
     /// called objₚ in the paper
     candidate_object: LatticeElt<ObjLD>,
 }
+impl<ObjLD: LatticeDef,
+     Peer: Ord+Clone+Debug+Default>
+    Opinion<ObjLD,Peer>
+where ObjLD::T : Clone+Debug+Default
+{
+    fn same_estimated_commit_config(&self,
+                                    other: &Self) -> bool
+    {
+        self.estimated_commit.config() ==
+            other.estimated_commit.config()
+    }
+    fn same_estimated_and_proposed_configs(&self,
+                                           other: &Self) -> bool
+    {
+        self.same_estimated_commit_config(other) &&
+            self.proposed_configs == other.proposed_configs
+    }
+}
 
-// Either Derive(Default) is not working reliably here,
-// or I am not setting up its prerequisites correctly.
-// Either way I can't get it to work so: manually!
+// Manually implement Default since #[derive(Default)] fails here,
+// see bug https://github.com/rust-lang/rust/issues/26925
 impl<ObjLD: LatticeDef,
      Peer: Ord+Clone+Debug>
     std::default::Default
@@ -177,9 +196,8 @@ where ObjLD::T : Clone+Debug+Default
     }
 }
 
-// Either Derive(Clone) is not working reliably here,
-// or I am not setting up its prerequisites correctly.
-// Either way I can't get it to work so: manually!
+// Manually implement Clone since #[derive(Clone)] fails here,
+// see bug https://github.com/rust-lang/rust/issues/26925
 impl<ObjLD: LatticeDef,
      Peer: Ord+Clone+Debug>
     std::clone::Clone
@@ -210,7 +228,8 @@ where ObjLD::T : Clone+Debug+Default
     Commit{from: Peer, state: StateLE<ObjLD,Peer>}
 }
 
-// #[derive(Clone)] no working here either, sigh.
+// Manually implement Clone since #[derive(Clone)] fails here,
+// see bug https://github.com/rust-lang/rust/issues/26925
 impl<ObjLD: LatticeDef,
      Peer: Ord+Clone+Debug+Default>
     std::clone::Clone
@@ -266,7 +285,8 @@ where ObjLD::T : Clone+Debug+Default
 
     id: Peer,
     sender: Sender<Message<ObjLD,Peer>>,
-    receiver: Receiver<Message<ObjLD,Peer>>
+    receiver: Receiver<Message<ObjLD,Peer>>,
+    connected: bool
 }
 
 impl<ObjLD: LatticeDef,
@@ -283,7 +303,8 @@ where ObjLD::T : Clone+Debug+Default
             sequence_responses: self.sequence_responses.clone(),
             id: self.id.clone(),
             sender: self.sender.clone(),
-            receiver: self.receiver.clone()
+            receiver: self.receiver.clone(),
+            connected: self.connected
         }
     }
 }
@@ -311,7 +332,8 @@ where ObjLD::T : Clone+Debug+Default
             sequence_responses: BTreeSet::new(),
             id: id,
             sender: s,
-            receiver: r
+            receiver: r,
+            connected: true
         }
     }
 
@@ -445,6 +467,47 @@ where ObjLD::T : Clone+Debug+Default
         }
     }
 
+    async fn send_request_to_peer(&mut self, peer: Peer)
+    {
+        if peer == self.id {
+            return;
+        }
+        let req = Message::Request
+        {
+            seq: self.sequence,
+            from: self.id.clone(),
+            to: peer.clone(),
+            opinion: self.opinion.clone()
+        };
+        self.sender.send(req).await;
+    }
+
+    async fn send_request_to_all_members_of_cfgs(&mut self,
+                                                 cfgs: &BTreeSet<CfgLE<Peer>>)
+    {
+        let all_members = members_of_cfgs(&cfgs);
+        for peer in all_members
+        {
+            self.send_request_to_peer(peer).await;
+        }
+    }
+
+    async fn receive_until_config_change_or_quorum(&mut self,
+                                                   old_opinion: &Opinion<ObjLD,Peer>,
+                                                   cfgs: &BTreeSet<CfgLE<Peer>>)
+    {
+        while self.opinion.same_estimated_commit_config(old_opinion)
+            && !self.have_quorum(&cfgs)
+        {
+            trace!("peer {:?} waiting for message", self.id);
+            match self.receiver.recv().await
+            {
+                None => self.connected = false,
+                Some(msg) => self.receive(&msg).await,
+            }
+        }
+    }
+
     pub async fn propose(&mut self, prop: &StateLE<ObjLD,Peer>) -> Result<StateLE<ObjLD,Peer>,Error>
     {
         let prop_opinion = Opinion
@@ -455,43 +518,16 @@ where ObjLD::T : Clone+Debug+Default
         };
         self.update_state(&prop_opinion);
         let mut learn_lower_bound : Option<StateLE<ObjLD,Peer>> = None;
-        let mut connected = true;
-        while connected
+        while self.connected
         {
             self.advance_seq();
             let old_opinion = self.opinion.clone();
             let cfgs : BTreeSet<CfgLE<Peer>> = self.every_possible_config_join();
-            let all_members = members_of_cfgs(&cfgs);
-            for peer in all_members
-            {
-                if peer == self.id {
-                    continue;
-                }
-                let req = Message::Request
-                {
-                    seq: self.sequence,
-                    from: self.id.clone(),
-                    to: peer.clone(),
-                    opinion: self.opinion.clone()
-                };
-                self.sender.send(req).await;
-            }
-            while (old_opinion.estimated_commit.config() ==
-                   self.opinion.estimated_commit.config())
-                && !self.have_quorum(&cfgs)
-            {
-                trace!("peer {:?} waiting for message", self.id);
-                match self.receiver.recv().await {
-                    None => connected = false,
-                    Some(msg) => self.receive(&msg).await,
-                }
-            }
+            self.send_request_to_all_members_of_cfgs(&cfgs).await;
+            self.receive_until_config_change_or_quorum(&old_opinion, &cfgs).await;
 
             // Stable configuration.
-            if (old_opinion.estimated_commit.config() ==
-                self.opinion.estimated_commit.config()) &&
-                (old_opinion.proposed_configs ==
-                 self.opinion.proposed_configs)
+            if self.opinion.same_estimated_and_proposed_configs(&old_opinion)
             {
                 debug!("peer {:?} found stable configuration", self.id);
                 let cstate = self.commit_state();
