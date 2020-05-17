@@ -20,4 +20,6 @@ log = "0.4"
 [dev-dependencies]
 futures = "0.3.4"
 pretty_env_logger = "0.4"
-stateright = "0.5.0"
+
+# Stateright is somewhat WIP and, for now, we want to use a newer-than-released version.
+stateright = { git = "https://github.com/graydon/stateright", rev = "575a1b454f1de6c4bd35693d22bca7aa61a2a255" }
