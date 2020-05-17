@@ -14,17 +14,14 @@
 /// anything Ord+Clone but probably ought to be something small, like an integer
 /// or UUID or string. Something that identifies a peer, and something you don't
 /// mind transmitting sets of, serialized, in messages.
+use pergola::{BTreeSetWithUnion, LatticeElt, Tuple2};
+use std::collections::BTreeSet;
 
-use pergola::{Tuple2, LatticeElt, BTreeSetWithUnion};
-use std::collections::{BTreeSet};
-
-pub type CfgLD<Peer> = Tuple2<BTreeSetWithUnion<Peer>,
-                              BTreeSetWithUnion<Peer>>;
+pub type CfgLD<Peer> = Tuple2<BTreeSetWithUnion<Peer>, BTreeSetWithUnion<Peer>>;
 pub type CfgLE<Peer> = LatticeElt<CfgLD<Peer>>;
 
 // Helper methods on the Cfg lattice elements.
-pub trait CfgLEExt<Peer:Ord+Clone>
-{
+pub trait CfgLEExt<Peer: Ord + Clone> {
     fn added_peers(&self) -> &BTreeSet<Peer>;
     fn added_peers_mut(&mut self) -> &mut BTreeSet<Peer>;
     fn removed_peers(&self) -> &BTreeSet<Peer>;
@@ -32,10 +29,7 @@ pub trait CfgLEExt<Peer:Ord+Clone>
     fn members(&self) -> BTreeSet<Peer>;
 }
 
-impl<Peer:Ord+Clone>
-    CfgLEExt<Peer>
-    for CfgLE<Peer>
-{
+impl<Peer: Ord + Clone> CfgLEExt<Peer> for CfgLE<Peer> {
     fn added_peers(&self) -> &BTreeSet<Peer> {
         &self.value.0
     }
@@ -48,8 +42,10 @@ impl<Peer:Ord+Clone>
     fn removed_peers_mut(&mut self) -> &mut BTreeSet<Peer> {
         &mut self.value.1
     }
-    fn members(&self) -> BTreeSet<Peer>
-    {
-        self.added_peers().difference(self.removed_peers()).cloned().collect()
+    fn members(&self) -> BTreeSet<Peer> {
+        self.added_peers()
+            .difference(self.removed_peers())
+            .cloned()
+            .collect()
     }
 }

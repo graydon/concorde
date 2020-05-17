@@ -2,26 +2,25 @@
 // Licensed under the MIT and Apache-2.0 licenses.
 
 use crate::*;
+use log::debug;
+use pergola::{LatticeElt, MaxDef};
 use pretty_env_logger;
-use pergola::{MaxDef, LatticeElt};
 use std::collections::BTreeMap;
-use log::{debug};
-
 
 type Peer = String;
 type ObjLD = MaxDef<u16>;
 type ObjLE = LatticeElt<ObjLD>;
-type Msg = Message<ObjLD,Peer>;
+type Msg = Message<ObjLD, Peer>;
 
 struct PeerRecord {
     incoming: Vec<Msg>,
-    participant: Participant<ObjLD,Peer>,
+    participant: Participant<ObjLD, Peer>,
 }
 
 #[derive(Default)]
 struct Network {
-    peers: BTreeMap<Peer,PeerRecord>,
-    num_finished: usize
+    peers: BTreeMap<Peer, PeerRecord>,
+    num_finished: usize,
 }
 
 impl Network {
@@ -42,35 +41,35 @@ impl Network {
         let mut outgoing: Vec<Msg> = vec![];
         for p in self.peers.values_mut() {
             let was_fini = p.participant.propose_is_fini();
-            p.participant.propose_step(p.incoming.iter(),
-                                       &mut outgoing);
+            p.participant.propose_step(p.incoming.iter(), &mut outgoing);
             p.incoming.clear();
             let is_fini = p.participant.propose_is_fini();
-            if !was_fini && is_fini  {
-                debug!("peer {} final_state {:?}", p.participant.id,
-                       p.participant.final_state);
+            if !was_fini && is_fini {
+                debug!(
+                    "peer {} final_state {:?}",
+                    p.participant.id, p.participant.final_state
+                );
                 self.num_finished += 1;
             }
         }
         for msg in outgoing {
             match &msg {
-                Message::Request{seq, from, to, ..} |
-                Message::Response{seq, from, to, ..}
-                =>
-                {
-                    let n = if let Message::Request{..} = msg
-                    { "request" } else { "response"};
+                Message::Request { seq, from, to, .. }
+                | Message::Response { seq, from, to, .. } => {
+                    let n = if let Message::Request { .. } = msg {
+                        "request"
+                    } else {
+                        "response"
+                    };
                     match self.peers.get_mut(to) {
                         None => (),
                         Some(p) => {
-                            debug!("point-to-point send {} #{} {} -> {}",
-                                   n, seq, from, to);
+                            debug!("point-to-point send {} #{} {} -> {}", n, seq, from, to);
                             p.incoming.push(msg.clone())
                         }
                     }
                 }
-                Message::Commit{from,..} =>
-                {
+                Message::Commit { from, .. } => {
                     for (id, p) in self.peers.iter_mut() {
                         debug!("broadcast {} send to {}", from, id);
                         p.incoming.push(msg.clone());

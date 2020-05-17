@@ -1,12 +1,12 @@
 // Copyright 2020 Graydon Hoare <graydon@pobox.com>
 // Licensed under the MIT and Apache-2.0 licenses.
 
-use pergola::{LatticeDef};
-use std::collections::{BTreeSet};
-use std::fmt::Debug;
+use crate::{CfgLE, CfgLEExt, Message, Opinion, StateLE, StateLEExt};
 use itertools::Itertools;
-use log::{debug,trace};
-use crate::{Opinion, CfgLE, Message, StateLE, StateLEExt, CfgLEExt};
+use log::{debug, trace};
+use pergola::LatticeDef;
+use std::collections::BTreeSet;
+use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 
 // Participants _could_ be implemented using async/await (and indeed earlier
@@ -22,9 +22,8 @@ use std::hash::{Hash, Hasher};
 // Every time propose is stepped forwards, it consumes any messages in its
 // incoming queue, pushes some number of messages on its outgoing queue, and
 // possibly performs a `ProposeStage` transition.
-#[derive(Clone,Debug,Hash)]
-pub enum ProposeStage
-{
+#[derive(Clone, Debug, Hash)]
+pub enum ProposeStage {
     Init, // Newly-constructed participant; propose has not yet begun.
     Send, // First part of proposal loop (possibly looping from Pick).
     Recv, // Second part of proposal loop, awaiting stabilization.
@@ -57,34 +56,32 @@ pub enum ProposeStage
 /// protocol that uses timeouts to ensure eventual delivery.
 
 #[derive(Debug)]
-pub struct Participant<ObjLD: LatticeDef,
-                       Peer: Ord+Clone+Debug+Hash>
-where ObjLD::T : Clone+Debug+Default
+pub struct Participant<ObjLD: LatticeDef, Peer: Ord + Clone + Debug + Hash>
+where
+    ObjLD::T: Clone + Debug + Default,
 {
     // State variables that can persist across proposals.
     pub id: Peer,
     sequence: u64,
-    opinion: Opinion<ObjLD,Peer>,
+    opinion: Opinion<ObjLD, Peer>,
 
     // State variables reset once per proposal.
     propose_stage: ProposeStage,
-    learn_lower_bound: Option<StateLE<ObjLD,Peer>>,
-    pub final_state: Option<StateLE<ObjLD,Peer>>,
+    learn_lower_bound: Option<StateLE<ObjLD, Peer>>,
+    pub final_state: Option<StateLE<ObjLD, Peer>>,
 
     // State variables reset once per send-recv-pick loop.
-    old_opinion: Opinion<ObjLD,Peer>,
+    old_opinion: Opinion<ObjLD, Peer>,
     all_possible_cfgs: BTreeSet<CfgLE<Peer>>,
     sequence_responses: BTreeSet<Peer>,
 }
 
-impl<ObjLD: LatticeDef,
-     Peer: Ord+Clone+Debug+Hash>
-    std::clone::Clone
-    for Participant<ObjLD,Peer>
-where ObjLD::T : Clone+Debug+Default
+impl<ObjLD: LatticeDef, Peer: Ord + Clone + Debug + Hash> std::clone::Clone
+    for Participant<ObjLD, Peer>
+where
+    ObjLD::T: Clone + Debug + Default,
 {
-    fn clone(&self) -> Self
-    {
+    fn clone(&self) -> Self {
         Participant {
             propose_stage: self.propose_stage.clone(),
             sequence: self.sequence,
@@ -99,11 +96,9 @@ where ObjLD::T : Clone+Debug+Default
     }
 }
 
-impl<ObjLD: LatticeDef,
-    Peer: Ord+Clone+Debug+Hash>
-    Hash
-    for Participant<ObjLD,Peer>
-    where ObjLD::T : Clone+Debug+Default+Hash
+impl<ObjLD: LatticeDef, Peer: Ord + Clone + Debug + Hash> Hash for Participant<ObjLD, Peer>
+where
+    ObjLD::T: Clone + Debug + Default + Hash,
 {
     fn hash<H: Hasher>(&self, hstate: &mut H) {
         self.propose_stage.hash(hstate);
@@ -118,15 +113,13 @@ impl<ObjLD: LatticeDef,
     }
 }
 
-impl<ObjLD:LatticeDef+'static,
-     Peer:Ord+Clone+Debug+Hash+'static>
+impl<ObjLD: LatticeDef + 'static, Peer: Ord + Clone + Debug + Hash + 'static>
     Participant<ObjLD, Peer>
-where ObjLD::T : Clone+Debug+Default
+where
+    ObjLD::T: Clone + Debug + Default,
 {
-    pub fn new(id: Peer) -> Self
-    {
-        Participant
-        {
+    pub fn new(id: Peer) -> Self {
+        Participant {
             id: id,
             sequence: 0,
             opinion: Opinion::default(),
@@ -141,8 +134,7 @@ where ObjLD::T : Clone+Debug+Default
         }
     }
 
-    fn update_state(&mut self, new_opinion: &Opinion<ObjLD,Peer>)
-    {
+    fn update_state(&mut self, new_opinion: &Opinion<ObjLD, Peer>) {
         // Update the commit estimate.
         self.opinion.estimated_commit =
             &self.opinion.estimated_commit + &new_opinion.estimated_commit;
@@ -152,25 +144,29 @@ where ObjLD::T : Clone+Debug+Default
             &self.opinion.candidate_object + &new_opinion.candidate_object;
 
         // Update and trim proposed configs.
-        self.opinion.proposed_configs =
-            self.opinion.proposed_configs
-                .union(&new_opinion.proposed_configs).cloned().collect();
+        self.opinion.proposed_configs = self
+            .opinion
+            .proposed_configs
+            .union(&new_opinion.proposed_configs)
+            .cloned()
+            .collect();
         let commit_cfg: &CfgLE<Peer> = self.opinion.estimated_commit.config();
-        self.opinion.proposed_configs =
-            self.opinion.proposed_configs.iter()
-                .filter(|u| ! (*u <= commit_cfg)).cloned().collect();
+        self.opinion.proposed_configs = self
+            .opinion
+            .proposed_configs
+            .iter()
+            .filter(|u| !(*u <= commit_cfg))
+            .cloned()
+            .collect();
     }
 
-    fn receive(&mut self, m: &Message<ObjLD,Peer>,
-               outgoing: &mut Vec<Message<ObjLD,Peer>>)
-    {
-        match m
-        {
-            Message::Request{seq, from, opinion, ..} =>
-            {
+    fn receive(&mut self, m: &Message<ObjLD, Peer>, outgoing: &mut Vec<Message<ObjLD, Peer>>) {
+        match m {
+            Message::Request {
+                seq, from, opinion, ..
+            } => {
                 self.update_state(opinion);
-                let resp = Message::Response
-                {
+                let resp = Message::Response {
                     seq: *seq,
                     from: self.id.clone(),
                     to: from.clone(),
@@ -178,16 +174,15 @@ where ObjLD::T : Clone+Debug+Default
                 };
                 outgoing.push(resp);
             }
-            Message::Response{seq, from, opinion, ..} =>
-            {
+            Message::Response {
+                seq, from, opinion, ..
+            } => {
                 self.update_state(opinion);
-                if *seq == self.sequence
-                {
+                if *seq == self.sequence {
                     self.sequence_responses.insert(from.clone());
                 }
             }
-            Message::Commit{state, ..} =>
-            {
+            Message::Commit { state, .. } => {
                 let mut committed_opinion = Opinion::default();
                 committed_opinion.estimated_commit = state.clone();
                 self.update_state(&committed_opinion);
@@ -197,18 +192,12 @@ where ObjLD::T : Clone+Debug+Default
 
     // Return a set of configs that represent joins of the estimated
     // commit's config with each possible subset of the proposed configs.
-    fn every_possible_config_join(&self) -> BTreeSet<CfgLE<Peer>>
-    {
-        let mut joins : BTreeSet<CfgLE<Peer>> = BTreeSet::new();
-        for sz in 0..=self.opinion.proposed_configs.len()
-        {
-            for subset in
-                self.opinion.proposed_configs.iter().combinations(sz)
-            {
-                let mut cfg : CfgLE<Peer> =
-                    self.opinion.estimated_commit.config().clone();
-                for s in subset
-                {
+    fn every_possible_config_join(&self) -> BTreeSet<CfgLE<Peer>> {
+        let mut joins: BTreeSet<CfgLE<Peer>> = BTreeSet::new();
+        for sz in 0..=self.opinion.proposed_configs.len() {
+            for subset in self.opinion.proposed_configs.iter().combinations(sz) {
+                let mut cfg: CfgLE<Peer> = self.opinion.estimated_commit.config().clone();
+                for s in subset {
                     cfg = cfg + s
                 }
                 joins.insert(cfg);
@@ -220,21 +209,18 @@ where ObjLD::T : Clone+Debug+Default
     // Return a config value to commit to: join of all active inputs
     // and the commit estimate's config.
     fn commit_cfg(&self) -> CfgLE<Peer> {
-        let mut cfg : CfgLE<Peer> = self.opinion.estimated_commit.config().clone();
+        let mut cfg: CfgLE<Peer> = self.opinion.estimated_commit.config().clone();
         for c in self.opinion.proposed_configs.iter() {
             cfg = cfg + c;
         }
         cfg
     }
 
-    fn commit_state(&self) -> StateLE<ObjLD,Peer>
-    {
-        StateLE::new_from((self.opinion.candidate_object.clone(),
-                           self.commit_cfg()))
+    fn commit_state(&self) -> StateLE<ObjLD, Peer> {
+        StateLE::new_from((self.opinion.candidate_object.clone(), self.commit_cfg()))
     }
 
-    fn advance_seq(&mut self)
-    {
+    fn advance_seq(&mut self) {
         self.sequence += 1;
         trace!("peer {:?} advanced seq to #{}", self.id, self.sequence);
         self.sequence_responses.clear();
@@ -242,17 +228,13 @@ where ObjLD::T : Clone+Debug+Default
 
     // Return true if we have received a response from a quorum in every
     // configuration in `cfgs`, otherwise false.
-    fn have_quorum_in_all_possible_cfgs(&self) -> bool
-    {
-        for cfg in self.all_possible_cfgs.iter()
-        {
+    fn have_quorum_in_all_possible_cfgs(&self) -> bool {
+        for cfg in self.all_possible_cfgs.iter() {
             let members = cfg.members();
             let quorum_size = (members.len() / 2) + 1;
-            let members_responded =
-                self.sequence_responses.intersection(&members).count();
+            let members_responded = self.sequence_responses.intersection(&members).count();
             let members_concurring = 1 /*self*/ + members_responded;
-            if members_concurring < quorum_size
-            {
+            if members_concurring < quorum_size {
                 trace!("peer {:?} does not have quorum", self.id);
                 return false;
             }
@@ -261,38 +243,31 @@ where ObjLD::T : Clone+Debug+Default
         true
     }
 
-    fn send_request_to_peer(&mut self, peer: Peer,
-                            outgoing: &mut Vec<Message<ObjLD,Peer>>)
-    {
+    fn send_request_to_peer(&mut self, peer: Peer, outgoing: &mut Vec<Message<ObjLD, Peer>>) {
         if peer == self.id {
             return;
         }
-        let req = Message::Request
-        {
+        let req = Message::Request {
             seq: self.sequence,
             from: self.id.clone(),
             to: peer.clone(),
-            opinion: self.opinion.clone()
+            opinion: self.opinion.clone(),
         };
         outgoing.push(req);
     }
 
-    fn propose_send(&mut self,
-                    outgoing: &mut Vec<Message<ObjLD,Peer>>)
-    {
+    fn propose_send(&mut self, outgoing: &mut Vec<Message<ObjLD, Peer>>) {
         self.advance_seq();
         self.old_opinion = self.opinion.clone();
         self.all_possible_cfgs = self.every_possible_config_join();
         let all_members = members_of_cfgs(&self.all_possible_cfgs);
-        for peer in all_members
-        {
+        for peer in all_members {
             self.send_request_to_peer(peer, outgoing);
         }
         self.propose_stage = ProposeStage::Recv;
     }
 
-    fn propose_recv(&mut self)
-    {
+    fn propose_recv(&mut self) {
         if !self.opinion.same_estimated_commit_config(&self.old_opinion)
             || self.have_quorum_in_all_possible_cfgs()
         {
@@ -300,52 +275,57 @@ where ObjLD::T : Clone+Debug+Default
         }
     }
 
-    fn propose_pick(&mut self, outgoing: &mut Vec<Message<ObjLD,Peer>>)
-    {
-        if self.opinion.same_estimated_and_proposed_configs(&self.old_opinion)
+    fn propose_pick(&mut self, outgoing: &mut Vec<Message<ObjLD, Peer>>) {
+        if self
+            .opinion
+            .same_estimated_and_proposed_configs(&self.old_opinion)
         {
             debug!("peer {:?} found stable configuration", self.id);
             let cstate = self.commit_state();
-            if self.learn_lower_bound == None
-            {
+            if self.learn_lower_bound == None {
                 self.learn_lower_bound = Some(cstate.clone())
             }
             // No greater object received.
-            if self.old_opinion.candidate_object == self.opinion.candidate_object
-            {
-                debug!("peer {:?} stable config has stable object, broadcasting and finishing", self.id);
-                let broadcast = Message::Commit{from: self.id.clone(), state: cstate.clone()};
+            if self.old_opinion.candidate_object == self.opinion.candidate_object {
+                debug!(
+                    "peer {:?} stable config has stable object, broadcasting and finishing",
+                    self.id
+                );
+                let broadcast = Message::Commit {
+                    from: self.id.clone(),
+                    state: cstate.clone(),
+                };
                 outgoing.push(broadcast);
                 self.final_state = Some(cstate);
                 self.propose_stage = ProposeStage::Fini;
                 return;
             }
         }
-        match &self.learn_lower_bound
-        {
-            Some(state) if state <= &self.opinion.estimated_commit =>
-            {
+        match &self.learn_lower_bound {
+            Some(state) if state <= &self.opinion.estimated_commit => {
                 // Adopt learned state.
-                debug!("peer {:?} stable config has acceptable lower bound, finishing", self.id);
+                debug!(
+                    "peer {:?} stable config has acceptable lower bound, finishing",
+                    self.id
+                );
                 self.final_state = Some(self.opinion.estimated_commit.clone());
                 self.propose_stage = ProposeStage::Fini;
                 return;
             }
-            _ => ()
+            _ => (),
         }
         // Made progress but unable to finish, transition back to send.
         self.propose_stage = ProposeStage::Send;
     }
 
-    pub fn propose_step<'a, MI>(&mut self, incoming: MI,
-                                outgoing: &mut Vec<Message<ObjLD,Peer>>)
-    where MI: std::iter::Iterator<Item = &'a Message<ObjLD,Peer>>
+    pub fn propose_step<'a, MI>(&mut self, incoming: MI, outgoing: &mut Vec<Message<ObjLD, Peer>>)
+    where
+        MI: std::iter::Iterator<Item = &'a Message<ObjLD, Peer>>,
     {
         for msg in incoming {
             self.receive(msg, outgoing);
         }
-        match self.propose_stage
-        {
+        match self.propose_stage {
             ProposeStage::Init => (),
             ProposeStage::Send => self.propose_send(outgoing),
             ProposeStage::Recv => self.propose_recv(),
@@ -355,17 +335,15 @@ where ObjLD::T : Clone+Debug+Default
     }
 
     /// Returns true iff the participant's proposal state-machine is fini.
-    pub fn propose_is_fini(&mut self) -> bool
-    {
+    pub fn propose_is_fini(&mut self) -> bool {
         match self.propose_stage {
             ProposeStage::Fini => true,
-            _ => false
+            _ => false,
         }
     }
 
     /// Starts a new proposal, resetting necessary state, so can be called at any time,
-    pub fn propose(&mut self, prop: &StateLE<ObjLD,Peer>)
-    {
+    pub fn propose(&mut self, prop: &StateLE<ObjLD, Peer>) {
         // Reset proposal state variables.
         self.learn_lower_bound = None;
         self.final_state = None;
@@ -374,11 +352,10 @@ where ObjLD::T : Clone+Debug+Default
         self.sequence_responses = BTreeSet::new();
 
         // Integrate proposal into internal state.
-        let prop_opinion = Opinion
-        {
+        let prop_opinion = Opinion {
             estimated_commit: self.opinion.estimated_commit.clone(),
             proposed_configs: singleton_set(prop.config().clone()),
-            candidate_object: prop.object().clone()
+            candidate_object: prop.object().clone(),
         };
         self.update_state(&prop_opinion);
 
@@ -388,17 +365,18 @@ where ObjLD::T : Clone+Debug+Default
 }
 // misc helpers
 
-fn singleton_set<T:Ord>(t: T) -> BTreeSet<T> {
+fn singleton_set<T: Ord>(t: T) -> BTreeSet<T> {
     let mut s = BTreeSet::new();
     s.insert(t);
     s
 }
 
-fn members_of_cfgs<Peer: Ord+Clone+Debug+Hash>(cfgs: &BTreeSet<CfgLE<Peer>>) -> BTreeSet<Peer> {
+fn members_of_cfgs<Peer: Ord + Clone + Debug + Hash>(
+    cfgs: &BTreeSet<CfgLE<Peer>>,
+) -> BTreeSet<Peer> {
     let mut u = BTreeSet::<Peer>::new();
     for c in cfgs.iter() {
         u = u.union(&c.members()).cloned().collect()
     }
     u
 }
-

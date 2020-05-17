@@ -56,16 +56,16 @@
 // TODO: add a trim watermark to CfgLD so it's not ever-growing.
 
 mod cfg;
-mod state;
-mod opinion;
 mod message;
+mod opinion;
 mod participant;
+mod state;
 
-pub use cfg::{CfgLD,CfgLE,CfgLEExt};
-pub use state::{StateLD,StateLE,StateLEExt};
+pub use cfg::{CfgLD, CfgLE, CfgLEExt};
 pub use message::Message;
 pub use opinion::Opinion;
 pub use participant::Participant;
+pub use state::{StateLD, StateLE, StateLEExt};
 
 #[cfg(test)]
 mod tests;
