@@ -335,7 +335,7 @@ where
     }
 
     /// Returns true iff the participant's proposal state-machine is fini.
-    pub fn propose_is_fini(&mut self) -> bool {
+    pub fn propose_is_fini(&self) -> bool {
         match self.propose_stage {
             ProposeStage::Fini => true,
             _ => false,
