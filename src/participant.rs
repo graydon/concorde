@@ -5,7 +5,7 @@ use crate::{CfgLE, CfgLEExt, Message, Opinion, StateLE, StateLEExt};
 use itertools::Itertools;
 use log::{debug, trace};
 use pergola::LatticeDef;
-use std::collections::BTreeSet;
+use im::OrdSet as ArcOrdSet;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 
@@ -72,8 +72,8 @@ where
 
     // State variables reset once per send-recv-pick loop.
     pub(crate) old_opinion: Opinion<ObjLD, Peer>,
-    pub(crate) all_possible_cfgs: BTreeSet<CfgLE<Peer>>,
-    pub(crate) sequence_responses: BTreeSet<Peer>,
+    pub(crate) all_possible_cfgs: ArcOrdSet<CfgLE<Peer>>,
+    pub(crate) sequence_responses: ArcOrdSet<Peer>,
 
     // History variables, for purposes of model checking.
     pub(crate) proposed_history: Vec<StateLE<ObjLD, Peer>>,
@@ -138,8 +138,8 @@ where
             final_state: None,
 
             old_opinion: Opinion::default(),
-            all_possible_cfgs: BTreeSet::new(),
-            sequence_responses: BTreeSet::new(),
+            all_possible_cfgs: ArcOrdSet::new(),
+            sequence_responses: ArcOrdSet::new(),
 
             // Store proposed and learned values here.
             proposed_history: Vec::new(),
@@ -160,9 +160,8 @@ where
         self.new_opinion.proposed_configs = self
             .new_opinion
             .proposed_configs
-            .union(&new_opinion.proposed_configs)
-            .cloned()
-            .collect();
+            .clone()
+            .union(new_opinion.proposed_configs.clone());
         let commit_cfg: &CfgLE<Peer> = self.new_opinion.estimated_commit.config();
         self.new_opinion.proposed_configs = self
             .new_opinion
@@ -205,8 +204,8 @@ where
 
     // Return a set of configs that represent joins of the estimated
     // commit's config with each possible subset of the proposed configs.
-    fn every_possible_config_join(&self) -> BTreeSet<CfgLE<Peer>> {
-        let mut joins: BTreeSet<CfgLE<Peer>> = BTreeSet::new();
+    fn every_possible_config_join(&self) -> ArcOrdSet<CfgLE<Peer>> {
+        let mut joins: ArcOrdSet<CfgLE<Peer>> = ArcOrdSet::new();
         for sz in 0..=self.new_opinion.proposed_configs.len() {
             for subset in self.new_opinion.proposed_configs.iter().combinations(sz) {
                 let mut cfg: CfgLE<Peer> = self.new_opinion.estimated_commit.config().clone();
@@ -245,7 +244,7 @@ where
         for cfg in self.all_possible_cfgs.iter() {
             let members = cfg.members();
             let quorum_size = (members.len() / 2) + 1;
-            let members_responded = self.sequence_responses.intersection(&members).count();
+            let members_responded = self.sequence_responses.clone().intersection(members).len();
             let members_concurring = 1 /*self*/ + members_responded;
             if members_concurring < quorum_size {
                 trace!("peer {:?} does not have quorum", self.id);
@@ -366,8 +365,8 @@ where
         self.lower_bound = None;
         self.final_state = None;
         self.old_opinion = Opinion::default();
-        self.all_possible_cfgs = BTreeSet::new();
-        self.sequence_responses = BTreeSet::new();
+        self.all_possible_cfgs = ArcOrdSet::new();
+        self.sequence_responses = ArcOrdSet::new();
 
         // Integrate proposal into internal state.
         let prop_opinion = Opinion {
@@ -386,18 +385,18 @@ where
 }
 // misc helpers
 
-fn singleton_set<T: Ord>(t: T) -> BTreeSet<T> {
-    let mut s = BTreeSet::new();
+fn singleton_set<T: Ord+Clone>(t: T) -> ArcOrdSet<T> {
+    let mut s = ArcOrdSet::new();
     s.insert(t);
     s
 }
 
 fn members_of_cfgs<Peer: Ord + Clone + Debug + Hash>(
-    cfgs: &BTreeSet<CfgLE<Peer>>,
-) -> BTreeSet<Peer> {
-    let mut u = BTreeSet::<Peer>::new();
+    cfgs: &ArcOrdSet<CfgLE<Peer>>,
+) -> ArcOrdSet<Peer> {
+    let mut u = ArcOrdSet::<Peer>::new();
     for c in cfgs.iter() {
-        u = u.union(&c.members()).cloned().collect()
+        u = u.union(c.members().clone())
     }
     u
 }

@@ -9,6 +9,7 @@ use stateright::actor::system::*;
 use stateright::actor::*;
 use stateright::checker::*;
 use std::collections::BTreeSet;
+use im::OrdSet as ArcOrdSet;
 use bit_set::BitSet;
 
 type ObjLD = pergola::BitSetWithUnion;
@@ -231,6 +232,7 @@ fn lattice_agreement_liveness(sys: &System<ConcordeActor>,
     return true;
 }
 
+// Returning false here means "past the boundary, stop exploring"
 fn lattice_agreement_boundary(sys: &System<ConcordeActor>,
                               state: &SystemState<ConcordeActor>) -> bool
 {
@@ -241,15 +243,17 @@ fn lattice_agreement_boundary(sys: &System<ConcordeActor>,
         for actor in sys.actors.iter() {
             if actor.id == part.id {
                 let n = actor.proposals_to_make.len();
-                if part.proposed_history.len() > n ||
-                    part.learned_history.len() > n
+                if part.proposed_history.len() < n ||
+                    part.learned_history.len() < n
                 {
-                    return false
+                    // 'true' means there's still work to do in at least one actor.
+                    return true;
                 }
             }
         }
     }
-    return true;
+    // 'false' means every actor has done what they set out to do.
+    return false;
 }
 
 fn model(sys: System<ConcordeActor>) -> Model<'static, System<ConcordeActor>> {
@@ -309,7 +313,7 @@ fn obj_to_string(obj: &ObjLE) -> String
     format!("{:#08b}", v)
 }
 
-fn responses_to_string(resp: &BTreeSet<Id>) -> String
+fn responses_to_string(resp: &ArcOrdSet<Id>) -> String
 {
     let mut s = String::new();
     s += "{";
@@ -341,7 +345,7 @@ fn cfg_to_string(cfg: &CfgLE<Id>) -> String
     s
 }
 
-fn cfgs_to_string(cfgs: &BTreeSet<CfgLE<Id>>) -> String
+fn cfgs_to_string(cfgs: &ArcOrdSet<CfgLE<Id>>) -> String
 {
     let mut s = String::new();
     s += "{";

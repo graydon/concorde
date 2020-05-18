@@ -4,7 +4,7 @@
 use crate::{CfgLE, StateLE, StateLEExt};
 use pergola::{LatticeDef, LatticeElt};
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use im::OrdSet as ArcOrdSet;
 use std::fmt::Debug;
 use std::hash::{Hash, Hasher};
 
@@ -23,7 +23,7 @@ where
     /// called vₚ in the paper
     pub estimated_commit: StateLE<ObjLD, Peer>,
     /// called Tₚ in the paper
-    pub proposed_configs: BTreeSet<CfgLE<Peer>>,
+    pub proposed_configs: ArcOrdSet<CfgLE<Peer>>,
     /// called objₚ in the paper
     pub candidate_object: LatticeElt<ObjLD>,
 }
@@ -50,7 +50,7 @@ where
     fn default() -> Self {
         Opinion {
             estimated_commit: StateLE::<ObjLD, Peer>::default(),
-            proposed_configs: BTreeSet::default(),
+            proposed_configs: ArcOrdSet::default(),
             candidate_object: LatticeElt::<ObjLD>::default(),
         }
     }
