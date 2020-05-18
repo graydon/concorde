@@ -7,6 +7,7 @@ use pretty_env_logger;
 use stateright::actor::system::*;
 use stateright::actor::*;
 use stateright::checker::*;
+use std::sync::Arc;
 
 type ObjLD = pergola::MaxDef<u16>;
 type ObjLE = pergola::LatticeElt<ObjLD>;
@@ -86,8 +87,9 @@ fn model(sys: System<ConcordeActor>) -> Model<'static, System<ConcordeActor>> {
     Model {
         state_machine: sys,
         properties: vec![Property::always(
-            "proposed",
-            |_sys: &System<ConcordeActor>, _state: &SystemState<ConcordeActor>| true,
+            "all-fini",
+            |_sys: &System<ConcordeActor>, _state: &SystemState<ConcordeActor>|
+            _state.actor_states.iter().all(|state:&Arc<Part>| (**state).propose_is_fini()),
         )],
         boundary: None,
     }
@@ -99,4 +101,9 @@ fn model_check() {
     pretty_env_logger::init();
     let mut checker = model(system()).checker_with_threads(num_cpus::get());
     checker.check_and_report(&mut std::io::stdout());
+    match checker.counterexample("all-fini") {
+        None => println!("no cex"),
+        Some(cex) => println!("cex: {:?}", cex)
+    }
+
 }
