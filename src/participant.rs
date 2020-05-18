@@ -62,18 +62,18 @@ where
 {
     // State variables that can persist across proposals.
     pub id: Peer,
-    sequence: u64,
-    opinion: Opinion<ObjLD, Peer>,
+    pub(crate) sequence: u64,
+    pub(crate) new_opinion: Opinion<ObjLD, Peer>,
 
     // State variables reset once per proposal.
-    propose_stage: ProposeStage,
-    learn_lower_bound: Option<StateLE<ObjLD, Peer>>,
+    pub(crate) propose_stage: ProposeStage,
+    pub(crate) lower_bound: Option<StateLE<ObjLD, Peer>>,
     pub final_state: Option<StateLE<ObjLD, Peer>>,
 
     // State variables reset once per send-recv-pick loop.
-    old_opinion: Opinion<ObjLD, Peer>,
-    all_possible_cfgs: BTreeSet<CfgLE<Peer>>,
-    sequence_responses: BTreeSet<Peer>,
+    pub(crate) old_opinion: Opinion<ObjLD, Peer>,
+    pub(crate) all_possible_cfgs: BTreeSet<CfgLE<Peer>>,
+    pub(crate) sequence_responses: BTreeSet<Peer>,
 }
 
 impl<ObjLD: LatticeDef, Peer: Ord + Clone + Debug + Hash> std::clone::Clone
@@ -85,8 +85,8 @@ where
         Participant {
             propose_stage: self.propose_stage.clone(),
             sequence: self.sequence,
-            opinion: self.opinion.clone(),
-            learn_lower_bound: self.learn_lower_bound.clone(),
+            new_opinion: self.new_opinion.clone(),
+            lower_bound: self.lower_bound.clone(),
             final_state: self.final_state.clone(),
             old_opinion: self.old_opinion.clone(),
             all_possible_cfgs: self.all_possible_cfgs.clone(),
@@ -103,8 +103,8 @@ where
     fn hash<H: Hasher>(&self, hstate: &mut H) {
         self.propose_stage.hash(hstate);
         self.sequence.hash(hstate);
-        self.opinion.hash(hstate);
-        self.learn_lower_bound.hash(hstate);
+        self.new_opinion.hash(hstate);
+        self.lower_bound.hash(hstate);
         self.final_state.hash(hstate);
         self.old_opinion.hash(hstate);
         self.all_possible_cfgs.hash(hstate);
@@ -122,10 +122,10 @@ where
         Participant {
             id: id,
             sequence: 0,
-            opinion: Opinion::default(),
+            new_opinion: Opinion::default(),
 
             propose_stage: ProposeStage::Init,
-            learn_lower_bound: None,
+            lower_bound: None,
             final_state: None,
 
             old_opinion: Opinion::default(),
@@ -136,23 +136,23 @@ where
 
     fn update_state(&mut self, new_opinion: &Opinion<ObjLD, Peer>) {
         // Update the commit estimate.
-        self.opinion.estimated_commit =
-            &self.opinion.estimated_commit + &new_opinion.estimated_commit;
+        self.new_opinion.estimated_commit =
+            &self.new_opinion.estimated_commit + &new_opinion.estimated_commit;
 
         // Update the object candidate.
-        self.opinion.candidate_object =
-            &self.opinion.candidate_object + &new_opinion.candidate_object;
+        self.new_opinion.candidate_object =
+            &self.new_opinion.candidate_object + &new_opinion.candidate_object;
 
         // Update and trim proposed configs.
-        self.opinion.proposed_configs = self
-            .opinion
+        self.new_opinion.proposed_configs = self
+            .new_opinion
             .proposed_configs
             .union(&new_opinion.proposed_configs)
             .cloned()
             .collect();
-        let commit_cfg: &CfgLE<Peer> = self.opinion.estimated_commit.config();
-        self.opinion.proposed_configs = self
-            .opinion
+        let commit_cfg: &CfgLE<Peer> = self.new_opinion.estimated_commit.config();
+        self.new_opinion.proposed_configs = self
+            .new_opinion
             .proposed_configs
             .iter()
             .filter(|u| !(*u <= commit_cfg))
@@ -170,7 +170,7 @@ where
                     seq: *seq,
                     from: self.id.clone(),
                     to: from.clone(),
-                    opinion: self.opinion.clone(),
+                    opinion: self.new_opinion.clone(),
                 };
                 outgoing.push(resp);
             }
@@ -194,9 +194,9 @@ where
     // commit's config with each possible subset of the proposed configs.
     fn every_possible_config_join(&self) -> BTreeSet<CfgLE<Peer>> {
         let mut joins: BTreeSet<CfgLE<Peer>> = BTreeSet::new();
-        for sz in 0..=self.opinion.proposed_configs.len() {
-            for subset in self.opinion.proposed_configs.iter().combinations(sz) {
-                let mut cfg: CfgLE<Peer> = self.opinion.estimated_commit.config().clone();
+        for sz in 0..=self.new_opinion.proposed_configs.len() {
+            for subset in self.new_opinion.proposed_configs.iter().combinations(sz) {
+                let mut cfg: CfgLE<Peer> = self.new_opinion.estimated_commit.config().clone();
                 for s in subset {
                     cfg = cfg + s
                 }
@@ -209,15 +209,15 @@ where
     // Return a config value to commit to: join of all active inputs
     // and the commit estimate's config.
     fn commit_cfg(&self) -> CfgLE<Peer> {
-        let mut cfg: CfgLE<Peer> = self.opinion.estimated_commit.config().clone();
-        for c in self.opinion.proposed_configs.iter() {
+        let mut cfg: CfgLE<Peer> = self.new_opinion.estimated_commit.config().clone();
+        for c in self.new_opinion.proposed_configs.iter() {
             cfg = cfg + c;
         }
         cfg
     }
 
     fn commit_state(&self) -> StateLE<ObjLD, Peer> {
-        StateLE::new_from((self.opinion.candidate_object.clone(), self.commit_cfg()))
+        StateLE::new_from((self.new_opinion.candidate_object.clone(), self.commit_cfg()))
     }
 
     fn advance_seq(&mut self) {
@@ -251,14 +251,14 @@ where
             seq: self.sequence,
             from: self.id.clone(),
             to: peer.clone(),
-            opinion: self.opinion.clone(),
+            opinion: self.new_opinion.clone(),
         };
         outgoing.push(req);
     }
 
     fn propose_send(&mut self, outgoing: &mut Vec<Message<ObjLD, Peer>>) {
         self.advance_seq();
-        self.old_opinion = self.opinion.clone();
+        self.old_opinion = self.new_opinion.clone();
         self.all_possible_cfgs = self.every_possible_config_join();
         let all_members = members_of_cfgs(&self.all_possible_cfgs);
         for peer in all_members {
@@ -268,7 +268,7 @@ where
     }
 
     fn propose_recv(&mut self) {
-        if !self.opinion.same_estimated_commit_config(&self.old_opinion)
+        if !self.new_opinion.same_estimated_commit_config(&self.old_opinion)
             || self.have_quorum_in_all_possible_cfgs()
         {
             self.propose_stage = ProposeStage::Pick;
@@ -277,16 +277,16 @@ where
 
     fn propose_pick(&mut self, outgoing: &mut Vec<Message<ObjLD, Peer>>) {
         if self
-            .opinion
+            .new_opinion
             .same_estimated_and_proposed_configs(&self.old_opinion)
         {
             debug!("peer {:?} found stable configuration", self.id);
             let cstate = self.commit_state();
-            if self.learn_lower_bound == None {
-                self.learn_lower_bound = Some(cstate.clone())
+            if self.lower_bound == None {
+                self.lower_bound = Some(cstate.clone())
             }
             // No greater object received.
-            if self.old_opinion.candidate_object == self.opinion.candidate_object {
+            if self.old_opinion.candidate_object == self.new_opinion.candidate_object {
                 debug!(
                     "peer {:?} stable config has stable object, broadcasting and finishing",
                     self.id
@@ -301,14 +301,14 @@ where
                 return;
             }
         }
-        match &self.learn_lower_bound {
-            Some(state) if state <= &self.opinion.estimated_commit => {
+        match &self.lower_bound {
+            Some(state) if state <= &self.new_opinion.estimated_commit => {
                 // Adopt learned state.
                 debug!(
                     "peer {:?} stable config has acceptable lower bound, finishing",
                     self.id
                 );
-                self.final_state = Some(self.opinion.estimated_commit.clone());
+                self.final_state = Some(self.new_opinion.estimated_commit.clone());
                 self.propose_stage = ProposeStage::Fini;
                 return;
             }
@@ -345,7 +345,7 @@ where
     /// Starts a new proposal, resetting necessary state, so can be called at any time,
     pub fn propose(&mut self, prop: &StateLE<ObjLD, Peer>) {
         // Reset proposal state variables.
-        self.learn_lower_bound = None;
+        self.lower_bound = None;
         self.final_state = None;
         self.old_opinion = Opinion::default();
         self.all_possible_cfgs = BTreeSet::new();
@@ -353,7 +353,7 @@ where
 
         // Integrate proposal into internal state.
         let prop_opinion = Opinion {
-            estimated_commit: self.opinion.estimated_commit.clone(),
+            estimated_commit: self.new_opinion.estimated_commit.clone(),
             proposed_configs: singleton_set(prop.config().clone()),
             candidate_object: prop.object().clone(),
         };
