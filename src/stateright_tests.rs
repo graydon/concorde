@@ -98,7 +98,7 @@ fn model(sys: System<ConcordeActor>) -> Model<'static, System<ConcordeActor>> {
 #[cfg(test)]
 #[test]
 fn model_check() {
-    pretty_env_logger::init();
+    let _ = pretty_env_logger::try_init();
     let mut checker = model(system()).checker_with_threads(num_cpus::get());
     checker.check_and_report(&mut std::io::stdout());
     match checker.counterexample("all-fini") {

@@ -99,7 +99,7 @@ impl Network {
 
 #[test]
 fn run_sim() {
-    pretty_env_logger::init();
+    let _ = pretty_env_logger::try_init();
     let mut n = Network::default();
     n.add_peer("a".into());
     n.add_peer("b".into());
