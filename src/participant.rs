@@ -22,7 +22,7 @@ use std::hash::{Hash, Hasher};
 // Every time propose is stepped forwards, it consumes any messages in its
 // incoming queue, pushes some number of messages on its outgoing queue, and
 // possibly performs a `ProposeStage` transition.
-#[derive(Clone, Debug, Hash)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ProposeStage {
     Init, // Newly-constructed participant; propose has not yet begun.
     Send, // First part of proposal loop (possibly looping from Pick).
@@ -74,6 +74,10 @@ where
     pub(crate) old_opinion: Opinion<ObjLD, Peer>,
     pub(crate) all_possible_cfgs: BTreeSet<CfgLE<Peer>>,
     pub(crate) sequence_responses: BTreeSet<Peer>,
+
+    // History variables, for purposes of model checking.
+    pub(crate) proposed_history: Vec<StateLE<ObjLD, Peer>>,
+    pub(crate) learned_history: Vec<StateLE<ObjLD, Peer>>,
 }
 
 impl<ObjLD: LatticeDef, Peer: Ord + Clone + Debug + Hash> std::clone::Clone
@@ -92,11 +96,14 @@ where
             all_possible_cfgs: self.all_possible_cfgs.clone(),
             sequence_responses: self.sequence_responses.clone(),
             id: self.id.clone(),
+            proposed_history: self.proposed_history.clone(),
+            learned_history: self.learned_history.clone(),
         }
     }
 }
 
-impl<ObjLD: LatticeDef, Peer: Ord + Clone + Debug + Hash> Hash for Participant<ObjLD, Peer>
+impl<ObjLD: LatticeDef, Peer: Ord + Clone + Debug + Hash>
+    Hash for Participant<ObjLD, Peer>
 where
     ObjLD::T: Clone + Debug + Default + Hash,
 {
@@ -110,6 +117,8 @@ where
         self.all_possible_cfgs.hash(hstate);
         self.sequence_responses.hash(hstate);
         self.id.hash(hstate);
+        self.proposed_history.hash(hstate);
+        self.learned_history.hash(hstate);
     }
 }
 
@@ -131,6 +140,10 @@ where
             old_opinion: Opinion::default(),
             all_possible_cfgs: BTreeSet::new(),
             sequence_responses: BTreeSet::new(),
+
+            // Store proposed and learned values here.
+            proposed_history: Vec::new(),
+            learned_history: Vec::new(),
         }
     }
 
@@ -275,6 +288,13 @@ where
         }
     }
 
+    fn learn_state(&mut self, state: StateLE<ObjLD, Peer>)
+    {
+        self.learned_history.push(state.clone());
+        self.final_state = Some(state);
+        self.propose_stage = ProposeStage::Fini;
+    }
+
     fn propose_pick(&mut self, outgoing: &mut Vec<Message<ObjLD, Peer>>) {
         if self
             .new_opinion
@@ -296,8 +316,7 @@ where
                     state: cstate.clone(),
                 };
                 outgoing.push(broadcast);
-                self.final_state = Some(cstate);
-                self.propose_stage = ProposeStage::Fini;
+                self.learn_state(cstate);
                 return;
             }
         }
@@ -308,8 +327,7 @@ where
                     "peer {:?} stable config has acceptable lower bound, finishing",
                     self.id
                 );
-                self.final_state = Some(self.new_opinion.estimated_commit.clone());
-                self.propose_stage = ProposeStage::Fini;
+                self.learn_state(self.new_opinion.estimated_commit.clone());
                 return;
             }
             _ => (),
@@ -361,6 +379,9 @@ where
 
         // Transition to send stage (start of send/recv/pick loop).
         self.propose_stage = ProposeStage::Send;
+
+        // Record proposal in history variable.
+        self.proposed_history.push(prop.clone());
     }
 }
 // misc helpers
