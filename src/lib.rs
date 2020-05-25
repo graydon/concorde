@@ -50,8 +50,9 @@
  * > equivalent, concord. Both words mean agreement, harmony or union.
  */
 
+// TODO: rename Peer parameter to PeerID, Participant to Peer?
 // TODO: timeouts?
-// TODO: lots more testing.
+// TODO: lots more testing, model checking.
 // TODO: add mechanism to approve/disapprove of specific quorums.
 // TODO: add a trim watermark to CfgLD so it's not ever-growing.
 
@@ -64,7 +65,7 @@ mod state;
 pub use cfg::{CfgLD, CfgLE, CfgLEExt};
 pub use message::Message;
 pub use opinion::Opinion;
-pub use participant::Participant;
+pub use participant::{Participant, ProposeStage};
 pub use state::{StateLD, StateLE, StateLEExt};
 
 #[cfg(test)]

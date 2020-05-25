@@ -1,28 +1,42 @@
 // Copyright 2020 Graydon Hoare <graydon@pobox.com>
 // Licensed under the MIT and Apache-2.0 licenses.
 
-use crate::{CfgLE, CfgLEExt, Message, Participant, Opinion, StateLE, StateLEExt};
+use crate::{CfgLE, CfgLEExt, Message, Participant, Opinion, StateLE, StateLEExt, ProposeStage};
 use log::debug;
 use pretty_env_logger;
 use stateright::*;
 use stateright::actor::system::*;
 use stateright::actor::*;
 use stateright::checker::*;
-use std::sync::Arc;
 use std::collections::BTreeSet;
+use bit_set::BitSet;
 
-type ObjLD = pergola::MaxDef<u16>;
+type ObjLD = pergola::BitSetWithUnion;
 type ObjLE = pergola::LatticeElt<ObjLD>;
 type Msg = Message<ObjLD, Id>;
 type Part = Participant<ObjLD, Id>;
 
 struct ConcordeActor {
-    proposal: Option<StateLE<ObjLD, Id>>,
+    // This 'id' field seems a little redundant but we need it to fish the id of
+    // an actor out of the System<> struct, which doesn't otherwise provide a
+    // way to fetch an actor's id in a property-check.
+    id: Id,
+    proposals_to_make: Vec<StateLE<ObjLD, Id>>,
 }
 
 fn step_participant(participant: &mut Part, incoming: &Vec<Msg>, o: &mut Out<ConcordeActor>) {
     let mut outgoing: Vec<Msg> = vec![];
     participant.propose_step(incoming.iter(), &mut outgoing);
+
+    // We loop here very slightly to allow an internal state-transition to
+    // happen: if we hit the end of a propose loop and haven't converged, we
+    // cycle around to send-state again, and need to step 1 more time to provoke
+    // messages send _from_ send-state.
+    if outgoing.len() == 0 {
+        if let ProposeStage::Send = participant.propose_stage {
+            participant.propose_step(incoming.iter(), &mut outgoing);
+        }
+    }
     for m in outgoing {
         match m {
             Message::Request { to, .. } => o.send(to, m),
@@ -40,14 +54,38 @@ fn step_participant(participant: &mut Part, incoming: &Vec<Msg>, o: &mut Out<Con
     }
 }
 
+impl ConcordeActor {
+    // We make a proposal on a Participant when its previous proposal has
+    // completed and there's a proposal remaining in the ConcordeActor (self)
+    // context that hasn't been proposed by the Participant yet.
+    fn next_proposal(&self, part: &Part) -> Option<StateLE<ObjLD, Id>>
+    {
+        let nextprop : usize = part.proposed_history.len();
+        // If we're in the middle of a proposal, make no new proposals.
+        if nextprop != part.learned_history.len() {
+            return None
+        }
+        // If we're done making proposals, make no new proposals.
+        if nextprop >= self.proposals_to_make.len() {
+            return None
+        }
+        return Some(self.proposals_to_make[nextprop].clone())
+    }
+}
+
 impl Actor for ConcordeActor {
     type Msg = Msg;
     type State = Part;
 
     fn init(i: InitIn<Self>, o: &mut Out<Self>) {
         debug!("initializing {:?}", i.id);
+
+        // Silly assert: context ids are assigned by us, separately
+        // from stateright's assignment of InitIn ids, but they
+        // need to match up.
+        assert!(i.id == i.context.id);
         let mut participant = Part::new(i.id);
-        if let Some(p) = &i.context.proposal {
+        if let Some(p) = &i.context.next_proposal(&participant) {
             debug!("proposing on {:?}", i.id);
             participant.propose(p);
             step_participant(&mut participant, &vec![], o);
@@ -59,6 +97,10 @@ impl Actor for ConcordeActor {
         let Event::Receive(_, msg) = i.event;
         debug!("next event on {:?}: recv {:?}", i.id, msg);
         let mut st = i.state.clone();
+        if let Some(p) = &i.context.next_proposal(&st) {
+            debug!("proposing on {:?}", i.id);
+            st.propose(p);
+        }
         step_participant(&mut st, &vec![msg], o);
         o.set_state(st);
     }
@@ -66,34 +108,160 @@ impl Actor for ConcordeActor {
 
 fn system() -> System<ConcordeActor> {
     let mut cfg = CfgLE::default();
-    cfg.added_peers_mut().insert(Id::from(0));
-    cfg.added_peers_mut().insert(Id::from(1));
-    cfg.added_peers_mut().insert(Id::from(2));
+    let id0 = Id::from(0);
+    let id1 = Id::from(1);
+    let id2 = Id::from(2);
+    cfg.added_peers_mut().insert(id0);
+    cfg.added_peers_mut().insert(id1);
+    cfg.added_peers_mut().insert(id2);
 
-    let obj1 = ObjLE::new_from(1000);
-    let obj2 = ObjLE::new_from(1001);
+    let obj1 = ObjLE::new_from(BitSet::from_bytes(&[0b1000_0000]));
+    let obj2 = ObjLE::new_from(BitSet::from_bytes(&[0b0100_0000]));
 
     let actors = vec![
-        ConcordeActor { proposal: None },
         ConcordeActor {
-            proposal: Some(StateLE::new_from((obj1.clone(), cfg.clone()))),
+            id: id0,
+            proposals_to_make: vec![]
         },
         ConcordeActor {
-            proposal: Some(StateLE::new_from((obj2.clone(), cfg.clone()))),
+            id: id1,
+            proposals_to_make: vec![
+                StateLE::new_from((obj1.clone(), cfg.clone())),
+            ],
+        },
+        ConcordeActor {
+            id: id2,
+            proposals_to_make: vec![
+                StateLE::new_from((obj2.clone(), cfg.clone())),
+            ],
         },
     ];
-    System::with_actors(actors)
+    let mut sys = System::with_actors(actors);
+    sys.duplicating_network = DuplicatingNetwork::No;
+    sys
+}
+
+
+// Properties to check:
+//
+// - validity: if propose(v) returns v', then v' is a join of other proposed values
+//   including v and all values learned before propose(v)
+// - consistency: learned values are totally ordered by <=
+// - liveness: every propose eventually finishes with a learn
+
+fn lattice_agreement_validity(_sys: &System<ConcordeActor>,
+                              state: &SystemState<ConcordeActor>) -> bool
+{
+    let mut all_proposed_added_peers = BTreeSet::new();
+    let mut all_proposed_removed_peers = BTreeSet::new();
+    let mut all_proposed_bits = BitSet::new();
+    for part in state.actor_states.iter() {
+        for v in part.proposed_history.iter() {
+            for peer in v.config().added_peers().iter() {
+                all_proposed_added_peers.insert(peer);
+            }
+            for peer in v.config().removed_peers().iter() {
+                all_proposed_removed_peers.insert(peer);
+            }
+            for bit in v.object().value.iter() {
+                all_proposed_bits.insert(bit);
+            }
+        }
+    }
+
+    for part in state.actor_states.iter() {
+        for v in part.learned_history.iter() {
+            for peer in v.config().added_peers().iter() {
+                if !all_proposed_added_peers.contains(peer) {
+                    return false;
+                }
+            }
+            for peer in v.config().removed_peers().iter() {
+                if !all_proposed_removed_peers.contains(peer) {
+                    return false;
+                }
+            }
+            for bit in v.object().value.iter() {
+                if !all_proposed_bits.contains(bit) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+fn lattice_agreement_consistency(_sys: &System<ConcordeActor>,
+                                 state: &SystemState<ConcordeActor>) -> bool
+{
+    for part in state.actor_states.iter() {
+        let h = &part.learned_history;
+        for i in 1..h.len() {
+            if h[i-1] < h[i] {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// Stateright's support for liveness properties is somewhat limited: it can only
+// check finite and acyclic "eventually" properties (I added support for them
+// last week!), meaning we're really checking that a given terminal state in a
+// (finite, acyclic) path is an acceptable place to stop. So this function just
+// checks if we're "finished" when we stop: all proposals we _wanted_ to make
+// were made, and they all _completed_ with a learned value.
+//
+// (Luckily this is how the liveness of lattice agreement is specified)
+fn lattice_agreement_liveness(sys: &System<ConcordeActor>,
+                              state: &SystemState<ConcordeActor>) -> bool
+{
+    for part in state.actor_states.iter() {
+        for actor in sys.actors.iter() {
+            if actor.id == part.id {
+                let n = actor.proposals_to_make.len();
+                if ! (part.proposed_history.len() == n &&
+                      part.learned_history.len() == n)
+                {
+                    return false
+                }
+            }
+        }
+    }
+    return true;
+}
+
+fn lattice_agreement_boundary(sys: &System<ConcordeActor>,
+                              state: &SystemState<ConcordeActor>) -> bool
+{
+    // println!("----");
+    // println!("boundary with fingerprint {:08x}", stateright::fingerprint(state));
+    // print_system_state(state);
+    for part in state.actor_states.iter() {
+        for actor in sys.actors.iter() {
+            if actor.id == part.id {
+                let n = actor.proposals_to_make.len();
+                if part.proposed_history.len() > n ||
+                    part.learned_history.len() > n
+                {
+                    return false
+                }
+            }
+        }
+    }
+    return true;
 }
 
 fn model(sys: System<ConcordeActor>) -> Model<'static, System<ConcordeActor>> {
     Model {
         state_machine: sys,
-        properties: vec![Property::always(
-            "unfinished",
-            |_sys: &System<ConcordeActor>, _state: &SystemState<ConcordeActor>|
-            _state.actor_states.iter().all(|state:&Arc<Part>| (**state).final_state.is_none()),
-        )],
-        boundary: None,
+        properties: vec![
+            Property::always("valid", lattice_agreement_validity),
+            Property::always("consistent", lattice_agreement_consistency),
+            Property::eventually("live", lattice_agreement_liveness),
+            Property::always("trivial", |_,_| true),
+        ],
+        boundary: Some(Box::new(lattice_agreement_boundary)),
     }
 }
 
@@ -103,14 +271,27 @@ fn model(sys: System<ConcordeActor>) -> Model<'static, System<ConcordeActor>> {
 fn model_check() {
     let _ = pretty_env_logger::try_init();
     let mut checker = model(system()).checker_with_threads(num_cpus::get());
-    checker.check_and_report(&mut std::io::stdout());
-    match checker.counterexample("unfinished") {
-        None => println!("property holds"),
-        Some(cex) =>
+
+    // Oddly, due to a bug in cargo we shouldn't write to stdout because
+    // it won't be swallowed by the test runner when running multithreaded
+    // (see https://github.com/rust-lang/rust/issues/42474) so we write
+    // to a local buffer and then println!() it ourselves.
+    let mut buf : Vec<u8> = Vec::new();
+    checker.check_and_report(&mut buf);
+
+    // Actually the printout from stateright is illegible so we just throw
+    // out their result and print our own.
+    // println!("{}", std::str::from_utf8(&buf).unwrap());
+
+    for prop in vec!["valid", "consistent", "live"] {
+        match checker.counterexample(prop) {
+            None => println!("property '{}' holds", prop),
+            Some(cex) =>
             {
-                println!("found counterexample to property");
+                println!("found counterexample to property '{}'", prop);
                 print_path(cex);
             }
+        }
     }
 }
 
@@ -121,7 +302,11 @@ fn model_check() {
 
 fn obj_to_string(obj: &ObjLE) -> String
 {
-    obj.value.to_string()
+    let mut v : u8 = 0;
+    for i in obj.value.iter() {
+        v |= 1_u8 << i;
+    }
+    format!("{:#08b}", v)
 }
 
 fn responses_to_string(resp: &BTreeSet<Id>) -> String
@@ -199,10 +384,10 @@ fn msg_to_string(msg: &Msg) -> String
 {
     match msg {
         Message::Request { seq, opinion, .. } =>
-            format!("Request(seq={}, opinion={})",
+            format!("Req?(seq={}, opinion={})",
                     seq, opinion_to_string(opinion)),
         Message::Response { seq, opinion, .. } =>
-            format!("Response(seq={}, opinion={})",
+            format!("Res!(seq={}, opinion={})",
                     seq, opinion_to_string(opinion)),
         Message::Commit { state, .. } =>
             format!("Commit({})", state_to_string(state))
@@ -210,6 +395,51 @@ fn msg_to_string(msg: &Msg) -> String
     }
 }
 
+fn print_system_state(state: &<System<ConcordeActor> as StateMachine>::State)
+{
+    println!("    state:");
+    for part in state.actor_states.iter()
+    {
+        println!("        participant {}:", usize::from(part.id));
+        println!("            seq: {}, stage: {:?}, seq_responses: {}",
+                 part.sequence, part.propose_stage,
+                 responses_to_string(&part.sequence_responses));
+        println!("            new_opinion: {}", opinion_to_string(&part.new_opinion));
+        println!("            old_opinion: {}", opinion_to_string(&part.old_opinion));
+        println!("            lower_bound: {}", state_opt_to_string(&part.lower_bound));
+        println!("            final_state: {}", state_opt_to_string(&part.final_state));
+        println!("            proposed {}, learned {}",
+                 part.proposed_history.len(),
+                 part.learned_history.len());
+    }
+    println!("    network:");
+    for envelope in state.network.iter()
+    {
+        println!("        message {} -> {}: {}",
+                 usize::from(envelope.src),
+                 usize::from(envelope.dst),
+                 msg_to_string(&envelope.msg));
+    }
+}
+
+fn print_system_action_opt(action: &Option<<System<ConcordeActor> as StateMachine>::Action>)
+{
+    match action
+    {
+        None =>
+            println!("        None"),
+        Some(SystemAction::Drop(envelope)) =>
+            println!("        drop message {} -> {}: {}",
+                     usize::from(envelope.src),
+                     usize::from(envelope.dst),
+                     msg_to_string(&envelope.msg)),
+        Some(SystemAction::Act(dst, Event::Receive(src, msg))) =>
+            println!("        recv message {} -> {}: {}",
+                     usize::from(*src),
+                     usize::from(*dst),
+                     msg_to_string(&msg))
+    }
+}
 
 fn print_path(path: Path<<System<ConcordeActor> as StateMachine>::State,
                          <System<ConcordeActor> as StateMachine>::Action>)
@@ -218,41 +448,8 @@ fn print_path(path: Path<<System<ConcordeActor> as StateMachine>::State,
     {
         println!("----");
         println!("step {}:", i);
-        println!("    state:");
-        for part in state.actor_states.iter()
-        {
-            println!("        participant {}:", usize::from(part.id));
-            println!("            seq: {}, stage: {:?}, seq_responses: {}",
-                     part.sequence, part.propose_stage,
-                     responses_to_string(&part.sequence_responses));
-            println!("            new_opinion: {}", opinion_to_string(&part.new_opinion));
-            println!("            old_opinion: {}", opinion_to_string(&part.old_opinion));
-            println!("            lower_bound: {}", state_opt_to_string(&part.lower_bound));
-            println!("            final_state: {}", state_opt_to_string(&part.final_state));
-        }
-        println!("    network:");
-        for envelope in state.network.iter()
-        {
-            println!("        message {} -> {}: {}",
-                     usize::from(envelope.src),
-                     usize::from(envelope.dst),
-                     msg_to_string(&envelope.msg));
-        }
+        print_system_state(state);
         println!("    action:");
-        match action
-        {
-            None =>
-                println!("        None"),
-            Some(SystemAction::Drop(envelope)) =>
-                println!("        drop message {} -> {}: {}",
-                         usize::from(envelope.src),
-                         usize::from(envelope.dst),
-                         msg_to_string(&envelope.msg)),
-            Some(SystemAction::Act(dst, Event::Receive(src, msg))) =>
-                println!("        recv message {} -> {}: {}",
-                         usize::from(*src),
-                         usize::from(*dst),
-                         msg_to_string(&msg))
-        }
+        print_system_action_opt(action);
     }
 }
