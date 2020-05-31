@@ -22,6 +22,7 @@ im = "15.0.0"
 futures = "0.3.4"
 pretty_env_logger = "0.4"
 bit-set = "0.5.0"
-# Stateright is somewhat WIP and, for now, we want to use a newer-than-released version.
-stateright = { git = "https://github.com/graydon/stateright", rev = "c009317235ed4c8d4eaf152dd35f74dea2ab79f5" }
+# Stateright is somewhat WIP and, for now, we want to control versions pretty specifically.
+stateright = { path = "../stateright" }
+# stateright = { git = "https://github.com/graydon/stateright", rev = "2491fe5420d0c2b148c8eb192f607ce1ac806772" }
 num_cpus = "1.13.0"

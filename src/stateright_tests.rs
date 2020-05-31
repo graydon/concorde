@@ -236,9 +236,6 @@ fn lattice_agreement_liveness(sys: &System<ConcordeActor>,
 fn lattice_agreement_boundary(sys: &System<ConcordeActor>,
                               state: &SystemState<ConcordeActor>) -> bool
 {
-    // println!("----");
-    // println!("boundary with fingerprint {:08x}", stateright::fingerprint(state));
-    // print_system_state(state);
     for part in state.actor_states.iter() {
         for actor in sys.actors.iter() {
             if actor.id == part.id {
@@ -253,6 +250,11 @@ fn lattice_agreement_boundary(sys: &System<ConcordeActor>,
         }
     }
     // 'false' means every actor has done what they set out to do.
+
+    //println!("----");
+    //println!("hit boundary with fingerprint {:08x}", stateright::fingerprint(state));
+    //print_system_state(state);
+
     return false;
 }
 
@@ -401,7 +403,7 @@ fn msg_to_string(msg: &Msg) -> String
 
 fn print_system_state(state: &<System<ConcordeActor> as StateMachine>::State)
 {
-    println!("    state:");
+    println!("    state at depth {}:", state.depth);
     for part in state.actor_states.iter()
     {
         println!("        participant {}:", usize::from(part.id));
