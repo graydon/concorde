@@ -1,7 +1,7 @@
 // Copyright 2020 Graydon Hoare <graydon@pobox.com>
 // Licensed under the MIT and Apache-2.0 licenses.
 
-use crate::{CfgLE, CfgLEExt, Message, Participant, Opinion, StateLE, StateLEExt, ProposeStage};
+use crate::{CfgLE, CfgLEExt, Message, Participant, Opinion, StateLE, StateLEExt};
 use log::debug;
 use pretty_env_logger;
 use stateright::*;
@@ -28,16 +28,6 @@ struct ConcordeActor {
 fn step_participant(participant: &mut Part, incoming: &Vec<Msg>, o: &mut Out<ConcordeActor>) {
     let mut outgoing: Vec<Msg> = vec![];
     participant.propose_step(incoming.iter(), &mut outgoing);
-
-    // We loop here very slightly to allow an internal state-transition to
-    // happen: if we hit the end of a propose loop and haven't converged, we
-    // cycle around to send-state again, and need to step 1 more time to provoke
-    // messages send _from_ send-state.
-    if outgoing.len() == 0 {
-        if let ProposeStage::Send = participant.propose_stage {
-            participant.propose_step(incoming.iter(), &mut outgoing);
-        }
-    }
     for m in outgoing {
         match m {
             Message::Request { to, .. } => o.send(to, m),

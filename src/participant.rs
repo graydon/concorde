@@ -22,7 +22,7 @@ use std::hash::{Hash, Hasher};
 // Every time propose is stepped forwards, it consumes any messages in its
 // incoming queue, pushes some number of messages on its outgoing queue, and
 // possibly performs a `ProposeStage` transition.
-#[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ProposeStage {
     Init, // Newly-constructed participant; propose has not yet begun.
     Send, // First part of proposal loop (possibly looping from Pick).
@@ -342,12 +342,26 @@ where
         for msg in incoming {
             self.receive(msg, outgoing);
         }
-        match self.propose_stage {
-            ProposeStage::Init => (),
-            ProposeStage::Send => self.propose_send(outgoing),
-            ProposeStage::Recv => self.propose_recv(),
-            ProposeStage::Pick => self.propose_pick(outgoing),
-            ProposeStage::Fini => (),
+        loop {
+            let pre_stage = self.propose_stage;
+            let pre_len = outgoing.len();
+            match self.propose_stage {
+                ProposeStage::Init => return,
+                ProposeStage::Send => self.propose_send(outgoing),
+                ProposeStage::Recv => self.propose_recv(),
+                ProposeStage::Pick => self.propose_pick(outgoing),
+                ProposeStage::Fini => return,
+            }
+            if outgoing.len() != pre_len
+            {
+                // Consider "sending something" a step.
+                return;
+            }
+            if pre_stage == self.propose_stage
+            {
+                // Consider "entered unchanging stage" a step.
+                return;
+            }
         }
     }
 
