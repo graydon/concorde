@@ -1,13 +1,14 @@
 // Copyright 2020 Graydon Hoare <graydon@pobox.com>
 // Licensed under the MIT and Apache-2.0 licenses.
 
-use crate::{CfgLE, CfgLEExt, Message, Opinion, StateLE, StateLEExt};
+use crate::{CfgLD, CfgLE, CfgLEExt, Message, Opinion, StateLE, StateLEExt};
+use im::OrdSet as ArcOrdSet;
 use itertools::Itertools;
 use log::{debug, trace};
-use pergola::LatticeDef;
-use im::OrdSet as ArcOrdSet;
+use pergola::{DefTraits, LatticeDef, LatticeElt};
+use std::cmp::Ordering;
 use std::fmt::Debug;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 
 // Participants _could_ be implemented using async/await (and indeed earlier
 // versions were) but doing so makes it impossible to capture, inspect, clone,
@@ -22,7 +23,7 @@ use std::hash::{Hash, Hasher};
 // Every time propose is stepped forwards, it consumes any messages in its
 // incoming queue, pushes some number of messages on its outgoing queue, and
 // possibly performs a `ProposeStage` transition.
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ProposeStage {
     Init, // Newly-constructed participant; propose has not yet begun.
     Send, // First part of proposal loop (possibly looping from Pick).
@@ -55,11 +56,8 @@ pub enum ProposeStage {
 /// a concern, the state machine should be embedded in a higher-level retry
 /// protocol that uses timeouts to ensure eventual delivery.
 
-#[derive(Debug)]
-pub struct Participant<ObjLD: LatticeDef, Peer: Ord + Clone + Debug + Hash>
-where
-    ObjLD::T: Clone + Debug + Default,
-{
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd)]
+pub struct Participant<ObjLD: LatticeDef, Peer: DefTraits> {
     // State variables that can persist across proposals.
     pub id: Peer,
     pub(crate) sequence: u64,
@@ -80,53 +78,7 @@ where
     pub(crate) learned_history: Vec<StateLE<ObjLD, Peer>>,
 }
 
-impl<ObjLD: LatticeDef, Peer: Ord + Clone + Debug + Hash> std::clone::Clone
-    for Participant<ObjLD, Peer>
-where
-    ObjLD::T: Clone + Debug + Default,
-{
-    fn clone(&self) -> Self {
-        Participant {
-            propose_stage: self.propose_stage.clone(),
-            sequence: self.sequence,
-            new_opinion: self.new_opinion.clone(),
-            lower_bound: self.lower_bound.clone(),
-            final_state: self.final_state.clone(),
-            old_opinion: self.old_opinion.clone(),
-            all_possible_cfgs: self.all_possible_cfgs.clone(),
-            sequence_responses: self.sequence_responses.clone(),
-            id: self.id.clone(),
-            proposed_history: self.proposed_history.clone(),
-            learned_history: self.learned_history.clone(),
-        }
-    }
-}
-
-impl<ObjLD: LatticeDef, Peer: Ord + Clone + Debug + Hash>
-    Hash for Participant<ObjLD, Peer>
-where
-    ObjLD::T: Clone + Debug + Default + Hash,
-{
-    fn hash<H: Hasher>(&self, hstate: &mut H) {
-        self.propose_stage.hash(hstate);
-        self.sequence.hash(hstate);
-        self.new_opinion.hash(hstate);
-        self.lower_bound.hash(hstate);
-        self.final_state.hash(hstate);
-        self.old_opinion.hash(hstate);
-        self.all_possible_cfgs.hash(hstate);
-        self.sequence_responses.hash(hstate);
-        self.id.hash(hstate);
-        self.proposed_history.hash(hstate);
-        self.learned_history.hash(hstate);
-    }
-}
-
-impl<ObjLD: LatticeDef + 'static, Peer: Ord + Clone + Debug + Hash + 'static>
-    Participant<ObjLD, Peer>
-where
-    ObjLD::T: Clone + Debug + Default,
-{
+impl<ObjLD: LatticeDef + 'static, Peer: DefTraits + 'static> Participant<ObjLD, Peer> {
     pub fn new(id: Peer) -> Self {
         Participant {
             id: id,
@@ -162,12 +114,16 @@ where
             .proposed_configs
             .clone()
             .union(new_opinion.proposed_configs.clone());
-        let commit_cfg: &CfgLE<Peer> = self.new_opinion.estimated_commit.config();
+        let commit_cfg: &<CfgLD<Peer> as LatticeDef>::T =
+            self.new_opinion.estimated_commit.config();
         self.new_opinion.proposed_configs = self
             .new_opinion
             .proposed_configs
             .iter()
-            .filter(|u| !(*u <= commit_cfg))
+            .filter(|u| {
+                <CfgLD<Peer> as LatticeDef>::partial_order(&u.value, commit_cfg)
+                    != Some(Ordering::Less)
+            })
             .cloned()
             .collect();
     }
@@ -208,7 +164,8 @@ where
         let mut joins: ArcOrdSet<CfgLE<Peer>> = ArcOrdSet::new();
         for sz in 0..=self.new_opinion.proposed_configs.len() {
             for subset in self.new_opinion.proposed_configs.iter().combinations(sz) {
-                let mut cfg: CfgLE<Peer> = self.new_opinion.estimated_commit.config().clone();
+                let mut cfg: CfgLE<Peer> =
+                    CfgLE::new_from(self.new_opinion.estimated_commit.config().clone());
                 for s in subset {
                     cfg = cfg + s
                 }
@@ -221,7 +178,8 @@ where
     // Return a config value to commit to: join of all active inputs
     // and the commit estimate's config.
     fn commit_cfg(&self) -> CfgLE<Peer> {
-        let mut cfg: CfgLE<Peer> = self.new_opinion.estimated_commit.config().clone();
+        let mut cfg: CfgLE<Peer> =
+            CfgLE::new_from(self.new_opinion.estimated_commit.config().clone());
         for c in self.new_opinion.proposed_configs.iter() {
             cfg = cfg + c;
         }
@@ -229,7 +187,10 @@ where
     }
 
     fn commit_state(&self) -> StateLE<ObjLD, Peer> {
-        StateLE::new_from((self.new_opinion.candidate_object.clone(), self.commit_cfg()))
+        StateLE::new_from((
+            self.new_opinion.candidate_object.value.clone(),
+            self.commit_cfg().value,
+        ))
     }
 
     fn advance_seq(&mut self) {
@@ -280,15 +241,16 @@ where
     }
 
     fn propose_recv(&mut self) {
-        if !self.new_opinion.same_estimated_commit_config(&self.old_opinion)
+        if !self
+            .new_opinion
+            .same_estimated_commit_config(&self.old_opinion)
             || self.have_quorum_in_all_possible_cfgs()
         {
             self.propose_stage = ProposeStage::Pick;
         }
     }
 
-    fn learn_state(&mut self, state: StateLE<ObjLD, Peer>)
-    {
+    fn learn_state(&mut self, state: StateLE<ObjLD, Peer>) {
         self.learned_history.push(state.clone());
         self.final_state = Some(state);
         self.propose_stage = ProposeStage::Fini;
@@ -352,13 +314,11 @@ where
                 ProposeStage::Pick => self.propose_pick(outgoing),
                 ProposeStage::Fini => return,
             }
-            if outgoing.len() != pre_len
-            {
+            if outgoing.len() != pre_len {
                 // Consider "sending something" a step.
                 return;
             }
-            if pre_stage == self.propose_stage
-            {
+            if pre_stage == self.propose_stage {
                 // Consider "entered unchanging stage" a step.
                 return;
             }
@@ -385,8 +345,8 @@ where
         // Integrate proposal into internal state.
         let prop_opinion = Opinion {
             estimated_commit: self.new_opinion.estimated_commit.clone(),
-            proposed_configs: singleton_set(prop.config().clone()),
-            candidate_object: prop.object().clone(),
+            proposed_configs: singleton_set(CfgLE::new_from(prop.config().clone())),
+            candidate_object: LatticeElt::new_from(prop.object().clone()),
         };
         self.update_state(&prop_opinion);
 
@@ -399,15 +359,13 @@ where
 }
 // misc helpers
 
-fn singleton_set<T: Ord+Clone>(t: T) -> ArcOrdSet<T> {
+fn singleton_set<T: Ord + Clone>(t: T) -> ArcOrdSet<T> {
     let mut s = ArcOrdSet::new();
     s.insert(t);
     s
 }
 
-fn members_of_cfgs<Peer: Ord + Clone + Debug + Hash>(
-    cfgs: &ArcOrdSet<CfgLE<Peer>>,
-) -> ArcOrdSet<Peer> {
+fn members_of_cfgs<Peer: DefTraits>(cfgs: &ArcOrdSet<CfgLE<Peer>>) -> ArcOrdSet<Peer> {
     let mut u = ArcOrdSet::<Peer>::new();
     for c in cfgs.iter() {
         u = u.union(c.members().clone())

@@ -1,16 +1,17 @@
 // Copyright 2020 Graydon Hoare <graydon@pobox.com>
 // Licensed under the MIT and Apache-2.0 licenses.
 
-use crate::{CfgLE, CfgLEExt, Message, Participant, Opinion, StateLE, StateLEExt};
+use crate::{CfgLE, CfgLEExt, Message, Opinion, Participant, StateLE, StateLEExt};
+use bit_set::BitSet;
+use im::OrdSet as ArcOrdSet;
 use log::debug;
+use pergola::BitSetWrapper;
 use pretty_env_logger;
-use stateright::*;
 use stateright::actor::system::*;
 use stateright::actor::*;
 use stateright::checker::*;
+use stateright::*;
 use std::collections::BTreeSet;
-use im::OrdSet as ArcOrdSet;
-use bit_set::BitSet;
 
 type ObjLD = pergola::BitSetWithUnion;
 type ObjLE = pergola::LatticeElt<ObjLD>;
@@ -37,7 +38,7 @@ fn step_participant(participant: &mut Part, incoming: &Vec<Msg>, o: &mut Out<Con
                     from: from,
                     state: state.clone(),
                 };
-                for id in state.config().members().iter() {
+                for id in CfgLE::new_from(state.config().clone()).members().iter() {
                     o.send(*id, cm.clone())
                 }
             }
@@ -49,18 +50,17 @@ impl ConcordeActor {
     // We make a proposal on a Participant when its previous proposal has
     // completed and there's a proposal remaining in the ConcordeActor (self)
     // context that hasn't been proposed by the Participant yet.
-    fn next_proposal(&self, part: &Part) -> Option<StateLE<ObjLD, Id>>
-    {
-        let nextprop : usize = part.proposed_history.len();
+    fn next_proposal(&self, part: &Part) -> Option<StateLE<ObjLD, Id>> {
+        let nextprop: usize = part.proposed_history.len();
         // If we're in the middle of a proposal, make no new proposals.
         if nextprop != part.learned_history.len() {
-            return None
+            return None;
         }
         // If we're done making proposals, make no new proposals.
         if nextprop >= self.proposals_to_make.len() {
-            return None
+            return None;
         }
-        return Some(self.proposals_to_make[nextprop].clone())
+        return Some(self.proposals_to_make[nextprop].clone());
     }
 }
 
@@ -106,32 +106,27 @@ fn system() -> System<ConcordeActor> {
     cfg.added_peers_mut().insert(id1);
     cfg.added_peers_mut().insert(id2);
 
-    let obj1 = ObjLE::new_from(BitSet::from_bytes(&[0b1000_0000]));
-    let obj2 = ObjLE::new_from(BitSet::from_bytes(&[0b0100_0000]));
+    let obj1 = ObjLE::new_from(BitSetWrapper(BitSet::from_bytes(&[0b1000_0000])));
+    let obj2 = ObjLE::new_from(BitSetWrapper(BitSet::from_bytes(&[0b0100_0000])));
 
     let actors = vec![
         ConcordeActor {
             id: id0,
-            proposals_to_make: vec![]
+            proposals_to_make: vec![],
         },
         ConcordeActor {
             id: id1,
-            proposals_to_make: vec![
-                StateLE::new_from((obj1.clone(), cfg.clone())),
-            ],
+            proposals_to_make: vec![StateLE::new_from((obj1.value.clone(), cfg.value.clone()))],
         },
         ConcordeActor {
             id: id2,
-            proposals_to_make: vec![
-                StateLE::new_from((obj2.clone(), cfg.clone())),
-            ],
+            proposals_to_make: vec![StateLE::new_from((obj2.value.clone(), cfg.value.clone()))],
         },
     ];
     let mut sys = System::with_actors(actors);
     sys.duplicating_network = DuplicatingNetwork::No;
     sys
 }
-
 
 // Properties to check:
 //
@@ -140,21 +135,23 @@ fn system() -> System<ConcordeActor> {
 // - consistency: learned values are totally ordered by <=
 // - liveness: every propose eventually finishes with a learn
 
-fn lattice_agreement_validity(_sys: &System<ConcordeActor>,
-                              state: &SystemState<ConcordeActor>) -> bool
-{
+fn lattice_agreement_validity(
+    _sys: &System<ConcordeActor>,
+    state: &SystemState<ConcordeActor>,
+) -> bool {
     let mut all_proposed_added_peers = BTreeSet::new();
     let mut all_proposed_removed_peers = BTreeSet::new();
     let mut all_proposed_bits = BitSet::new();
     for part in state.actor_states.iter() {
         for v in part.proposed_history.iter() {
-            for peer in v.config().added_peers().iter() {
-                all_proposed_added_peers.insert(peer);
+            let cfg = CfgLE::new_from(v.config().clone());
+            for peer in cfg.added_peers().iter() {
+                all_proposed_added_peers.insert(peer.clone());
             }
-            for peer in v.config().removed_peers().iter() {
-                all_proposed_removed_peers.insert(peer);
+            for peer in cfg.removed_peers().iter() {
+                all_proposed_removed_peers.insert(peer.clone());
             }
-            for bit in v.object().value.iter() {
+            for bit in v.object().0.iter() {
                 all_proposed_bits.insert(bit);
             }
         }
@@ -162,17 +159,18 @@ fn lattice_agreement_validity(_sys: &System<ConcordeActor>,
 
     for part in state.actor_states.iter() {
         for v in part.learned_history.iter() {
-            for peer in v.config().added_peers().iter() {
+            let cfg = CfgLE::new_from(v.config().clone());
+            for peer in cfg.added_peers().iter() {
                 if !all_proposed_added_peers.contains(peer) {
                     return false;
                 }
             }
-            for peer in v.config().removed_peers().iter() {
+            for peer in cfg.removed_peers().iter() {
                 if !all_proposed_removed_peers.contains(peer) {
                     return false;
                 }
             }
-            for bit in v.object().value.iter() {
+            for bit in v.object().0.iter() {
                 if !all_proposed_bits.contains(bit) {
                     return false;
                 }
@@ -182,13 +180,14 @@ fn lattice_agreement_validity(_sys: &System<ConcordeActor>,
     true
 }
 
-fn lattice_agreement_consistency(_sys: &System<ConcordeActor>,
-                                 state: &SystemState<ConcordeActor>) -> bool
-{
+fn lattice_agreement_consistency(
+    _sys: &System<ConcordeActor>,
+    state: &SystemState<ConcordeActor>,
+) -> bool {
     for part in state.actor_states.iter() {
         let h = &part.learned_history;
         for i in 1..h.len() {
-            if h[i-1] < h[i] {
+            if h[i - 1] < h[i] {
                 return false;
             }
         }
@@ -204,17 +203,16 @@ fn lattice_agreement_consistency(_sys: &System<ConcordeActor>,
 // were made, and they all _completed_ with a learned value.
 //
 // (Luckily this is how the liveness of lattice agreement is specified)
-fn lattice_agreement_liveness(sys: &System<ConcordeActor>,
-                              state: &SystemState<ConcordeActor>) -> bool
-{
+fn lattice_agreement_liveness(
+    sys: &System<ConcordeActor>,
+    state: &SystemState<ConcordeActor>,
+) -> bool {
     for part in state.actor_states.iter() {
         for actor in sys.actors.iter() {
             if actor.id == part.id {
                 let n = actor.proposals_to_make.len();
-                if ! (part.proposed_history.len() == n &&
-                      part.learned_history.len() == n)
-                {
-                    return false
+                if !(part.proposed_history.len() == n && part.learned_history.len() == n) {
+                    return false;
                 }
             }
         }
@@ -223,16 +221,15 @@ fn lattice_agreement_liveness(sys: &System<ConcordeActor>,
 }
 
 // Returning false here means "past the boundary, stop exploring"
-fn lattice_agreement_boundary(sys: &System<ConcordeActor>,
-                              state: &SystemState<ConcordeActor>) -> bool
-{
+fn lattice_agreement_boundary(
+    sys: &System<ConcordeActor>,
+    state: &SystemState<ConcordeActor>,
+) -> bool {
     for part in state.actor_states.iter() {
         for actor in sys.actors.iter() {
             if actor.id == part.id {
                 let n = actor.proposals_to_make.len();
-                if part.proposed_history.len() < n ||
-                    part.learned_history.len() < n
-                {
+                if part.proposed_history.len() < n || part.learned_history.len() < n {
                     // 'true' means there's still work to do in at least one actor.
                     return true;
                 }
@@ -255,12 +252,11 @@ fn model(sys: System<ConcordeActor>) -> Model<'static, System<ConcordeActor>> {
             Property::always("valid", lattice_agreement_validity),
             Property::always("consistent", lattice_agreement_consistency),
             Property::eventually("live", lattice_agreement_liveness),
-            Property::always("trivial", |_,_| true),
+            Property::always("trivial", |_, _| true),
         ],
         boundary: Some(Box::new(lattice_agreement_boundary)),
     }
 }
-
 
 #[cfg(test)]
 #[test]
@@ -272,7 +268,7 @@ fn model_check() {
     // it won't be swallowed by the test runner when running multithreaded
     // (see https://github.com/rust-lang/rust/issues/42474) so we write
     // to a local buffer and then println!() it ourselves.
-    let mut buf : Vec<u8> = Vec::new();
+    let mut buf: Vec<u8> = Vec::new();
     checker.check_and_report(&mut buf);
 
     // Actually the printout from stateright is illegible so we just throw
@@ -282,8 +278,7 @@ fn model_check() {
     for prop in vec!["valid", "consistent", "live"] {
         match checker.counterexample(prop) {
             None => println!("property '{}' holds", prop),
-            Some(cex) =>
-            {
+            Some(cex) => {
                 println!("found counterexample to property '{}'", prop);
                 print_path(cex);
             }
@@ -291,22 +286,19 @@ fn model_check() {
     }
 }
 
-
 //---------------------------------------------------------
 // Remainder is just for pretty-printing paths
 //---------------------------------------------------------
 
-fn obj_to_string(obj: &ObjLE) -> String
-{
-    let mut v : u8 = 0;
-    for i in obj.value.iter() {
+fn obj_to_string(obj: &ObjLE) -> String {
+    let mut v: u8 = 0;
+    for i in obj.value.0.iter() {
         v |= 1_u8 << i;
     }
     format!("{:#08b}", v)
 }
 
-fn responses_to_string(resp: &ArcOrdSet<Id>) -> String
-{
+fn responses_to_string(resp: &ArcOrdSet<Id>) -> String {
     let mut s = String::new();
     s += "{";
     let mut first = true;
@@ -321,8 +313,7 @@ fn responses_to_string(resp: &ArcOrdSet<Id>) -> String
     s
 }
 
-fn cfg_to_string(cfg: &CfgLE<Id>) -> String
-{
+fn cfg_to_string(cfg: &CfgLE<Id>) -> String {
     let mut s = String::new();
     s += "{";
     let mut first = true;
@@ -337,8 +328,7 @@ fn cfg_to_string(cfg: &CfgLE<Id>) -> String
     s
 }
 
-fn cfgs_to_string(cfgs: &ArcOrdSet<CfgLE<Id>>) -> String
-{
+fn cfgs_to_string(cfgs: &ArcOrdSet<CfgLE<Id>>) -> String {
     let mut s = String::new();
     s += "{";
     let mut first = true;
@@ -353,95 +343,110 @@ fn cfgs_to_string(cfgs: &ArcOrdSet<CfgLE<Id>>) -> String
     s
 }
 
-fn state_to_string(state: &StateLE<ObjLD, Id>) -> String
-{
-    format!("[obj:{}, cfg:{}]",
-            obj_to_string(state.object()),
-            cfg_to_string(state.config()))
+fn state_to_string(state: &StateLE<ObjLD, Id>) -> String {
+    format!(
+        "[obj:{}, cfg:{}]",
+        obj_to_string(&ObjLE::new_from(state.object().clone())),
+        cfg_to_string(&CfgLE::new_from(state.config().clone()))
+    )
 }
 
-fn state_opt_to_string(state: &Option<StateLE<ObjLD, Id>>) -> String
-{
+fn state_opt_to_string(state: &Option<StateLE<ObjLD, Id>>) -> String {
     match state {
         None => String::from("None"),
-        Some(s) => state_to_string(s)
+        Some(s) => state_to_string(s),
     }
 }
 
-fn opinion_to_string(op: &Opinion<ObjLD, Id>) -> String
-{
-    format!("[est_commit: {}, prop_cfgs:{}, cand_obj:{}]",
-            state_to_string(&op.estimated_commit),
-            cfgs_to_string(&op.proposed_configs),
-            obj_to_string(&op.candidate_object))
+fn opinion_to_string(op: &Opinion<ObjLD, Id>) -> String {
+    format!(
+        "[est_commit: {}, prop_cfgs:{}, cand_obj:{}]",
+        state_to_string(&op.estimated_commit),
+        cfgs_to_string(&op.proposed_configs),
+        obj_to_string(&op.candidate_object)
+    )
 }
 
-fn msg_to_string(msg: &Msg) -> String
-{
+fn msg_to_string(msg: &Msg) -> String {
     match msg {
-        Message::Request { seq, opinion, .. } =>
-            format!("Req?(seq={}, opinion={})",
-                    seq, opinion_to_string(opinion)),
-        Message::Response { seq, opinion, .. } =>
-            format!("Res!(seq={}, opinion={})",
-                    seq, opinion_to_string(opinion)),
-        Message::Commit { state, .. } =>
-            format!("Commit({})", state_to_string(state))
-
+        Message::Request { seq, opinion, .. } => {
+            format!("Req?(seq={}, opinion={})", seq, opinion_to_string(opinion))
+        }
+        Message::Response { seq, opinion, .. } => {
+            format!("Res!(seq={}, opinion={})", seq, opinion_to_string(opinion))
+        }
+        Message::Commit { state, .. } => format!("Commit({})", state_to_string(state)),
     }
 }
 
-fn print_system_state(state: &<System<ConcordeActor> as StateMachine>::State)
-{
+fn print_system_state(state: &<System<ConcordeActor> as StateMachine>::State) {
     println!("    state at depth {}:", state.depth);
-    for part in state.actor_states.iter()
-    {
+    for part in state.actor_states.iter() {
         println!("        participant {}:", usize::from(part.id));
-        println!("            seq: {}, stage: {:?}, seq_responses: {}",
-                 part.sequence, part.propose_stage,
-                 responses_to_string(&part.sequence_responses));
-        println!("            new_opinion: {}", opinion_to_string(&part.new_opinion));
-        println!("            old_opinion: {}", opinion_to_string(&part.old_opinion));
-        println!("            lower_bound: {}", state_opt_to_string(&part.lower_bound));
-        println!("            final_state: {}", state_opt_to_string(&part.final_state));
-        println!("            proposed {}, learned {}",
-                 part.proposed_history.len(),
-                 part.learned_history.len());
+        println!(
+            "            seq: {}, stage: {:?}, seq_responses: {}",
+            part.sequence,
+            part.propose_stage,
+            responses_to_string(&part.sequence_responses)
+        );
+        println!(
+            "            new_opinion: {}",
+            opinion_to_string(&part.new_opinion)
+        );
+        println!(
+            "            old_opinion: {}",
+            opinion_to_string(&part.old_opinion)
+        );
+        println!(
+            "            lower_bound: {}",
+            state_opt_to_string(&part.lower_bound)
+        );
+        println!(
+            "            final_state: {}",
+            state_opt_to_string(&part.final_state)
+        );
+        println!(
+            "            proposed {}, learned {}",
+            part.proposed_history.len(),
+            part.learned_history.len()
+        );
     }
     println!("    network:");
-    for envelope in state.network.iter()
-    {
-        println!("        message {} -> {}: {}",
-                 usize::from(envelope.src),
-                 usize::from(envelope.dst),
-                 msg_to_string(&envelope.msg));
+    for envelope in state.network.iter() {
+        println!(
+            "        message {} -> {}: {}",
+            usize::from(envelope.src),
+            usize::from(envelope.dst),
+            msg_to_string(&envelope.msg)
+        );
     }
 }
 
-fn print_system_action_opt(action: &Option<<System<ConcordeActor> as StateMachine>::Action>)
-{
-    match action
-    {
-        None =>
-            println!("        None"),
-        Some(SystemAction::Drop(envelope)) =>
-            println!("        drop message {} -> {}: {}",
-                     usize::from(envelope.src),
-                     usize::from(envelope.dst),
-                     msg_to_string(&envelope.msg)),
-        Some(SystemAction::Act(dst, Event::Receive(src, msg))) =>
-            println!("        recv message {} -> {}: {}",
-                     usize::from(*src),
-                     usize::from(*dst),
-                     msg_to_string(&msg))
+fn print_system_action_opt(action: &Option<<System<ConcordeActor> as StateMachine>::Action>) {
+    match action {
+        None => println!("        None"),
+        Some(SystemAction::Drop(envelope)) => println!(
+            "        drop message {} -> {}: {}",
+            usize::from(envelope.src),
+            usize::from(envelope.dst),
+            msg_to_string(&envelope.msg)
+        ),
+        Some(SystemAction::Act(dst, Event::Receive(src, msg))) => println!(
+            "        recv message {} -> {}: {}",
+            usize::from(*src),
+            usize::from(*dst),
+            msg_to_string(&msg)
+        ),
     }
 }
 
-fn print_path(path: Path<<System<ConcordeActor> as StateMachine>::State,
-                         <System<ConcordeActor> as StateMachine>::Action>)
-{
-    for (i, (state, action)) in path.into_vec().iter().enumerate()
-    {
+fn print_path(
+    path: Path<
+        <System<ConcordeActor> as StateMachine>::State,
+        <System<ConcordeActor> as StateMachine>::Action,
+    >,
+) {
+    for (i, (state, action)) in path.into_vec().iter().enumerate() {
         println!("----");
         println!("step {}:", i);
         print_system_state(state);
