@@ -88,7 +88,7 @@ impl Network {
         let mut obj = ObjLE::new_from(1000);
         for p in self.peers.values_mut() {
             obj.value += 1;
-            let state = StateLE::new_from((obj.value.clone(), cfg.value.clone()));
+            let state = StateLE::new_from((obj.clone(), cfg.clone()));
             p.participant.propose(&state);
         }
         while !self.all_finished() {

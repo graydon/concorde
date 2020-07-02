@@ -11,15 +11,15 @@ pub type StateLE<ObjLD, Peer> = LatticeElt<StateLD<ObjLD, Peer>>;
 
 /// Helper methods on the State lattice elements.
 pub trait StateLEExt<ObjLD: LatticeDef, Peer: DefTraits> {
-    fn object(&self) -> &ObjLD::T;
-    fn config(&self) -> &<CfgLD<Peer> as LatticeDef>::T;
+    fn object(&self) -> &LatticeElt<ObjLD>;
+    fn config(&self) -> &LatticeElt<CfgLD<Peer>>;
 }
 
 impl<ObjLD: LatticeDef, Peer: DefTraits> StateLEExt<ObjLD, Peer> for StateLE<ObjLD, Peer> {
-    fn object(&self) -> &ObjLD::T {
+    fn object(&self) -> &LatticeElt<ObjLD> {
         &self.value.0
     }
-    fn config(&self) -> &<CfgLD<Peer> as LatticeDef>::T {
+    fn config(&self) -> &LatticeElt<CfgLD<Peer>> {
         &self.value.1
     }
 }

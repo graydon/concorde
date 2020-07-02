@@ -1,12 +1,11 @@
 // Copyright 2020 Graydon Hoare <graydon@pobox.com>
 // Licensed under the MIT and Apache-2.0 licenses.
 
-use crate::{CfgLD, CfgLE, CfgLEExt, Message, Opinion, StateLE, StateLEExt};
+use crate::{CfgLE, CfgLEExt, Message, Opinion, StateLE, StateLEExt};
 use im::OrdSet as ArcOrdSet;
 use itertools::Itertools;
 use log::{debug, trace};
-use pergola::{DefTraits, LatticeDef, LatticeElt};
-use std::cmp::Ordering;
+use pergola::{DefTraits, LatticeDef};
 use std::fmt::Debug;
 use std::hash::Hash;
 
@@ -114,16 +113,13 @@ impl<ObjLD: LatticeDef + 'static, Peer: DefTraits + 'static> Participant<ObjLD, 
             .proposed_configs
             .clone()
             .union(new_opinion.proposed_configs.clone());
-        let commit_cfg: &<CfgLD<Peer> as LatticeDef>::T =
+        let commit_cfg: &CfgLE<Peer> =
             self.new_opinion.estimated_commit.config();
         self.new_opinion.proposed_configs = self
             .new_opinion
             .proposed_configs
             .iter()
-            .filter(|u| {
-                <CfgLD<Peer> as LatticeDef>::partial_order(&u.value, commit_cfg)
-                    != Some(Ordering::Less)
-            })
+            .filter(|u| { *u >= commit_cfg })
             .cloned()
             .collect();
     }
@@ -164,8 +160,7 @@ impl<ObjLD: LatticeDef + 'static, Peer: DefTraits + 'static> Participant<ObjLD, 
         let mut joins: ArcOrdSet<CfgLE<Peer>> = ArcOrdSet::new();
         for sz in 0..=self.new_opinion.proposed_configs.len() {
             for subset in self.new_opinion.proposed_configs.iter().combinations(sz) {
-                let mut cfg: CfgLE<Peer> =
-                    CfgLE::new_from(self.new_opinion.estimated_commit.config().clone());
+                let mut cfg: CfgLE<Peer> = self.new_opinion.estimated_commit.config().clone();
                 for s in subset {
                     cfg = cfg + s
                 }
@@ -178,8 +173,7 @@ impl<ObjLD: LatticeDef + 'static, Peer: DefTraits + 'static> Participant<ObjLD, 
     // Return a config value to commit to: join of all active inputs
     // and the commit estimate's config.
     fn commit_cfg(&self) -> CfgLE<Peer> {
-        let mut cfg: CfgLE<Peer> =
-            CfgLE::new_from(self.new_opinion.estimated_commit.config().clone());
+        let mut cfg: CfgLE<Peer> = self.new_opinion.estimated_commit.config().clone();
         for c in self.new_opinion.proposed_configs.iter() {
             cfg = cfg + c;
         }
@@ -188,8 +182,8 @@ impl<ObjLD: LatticeDef + 'static, Peer: DefTraits + 'static> Participant<ObjLD, 
 
     fn commit_state(&self) -> StateLE<ObjLD, Peer> {
         StateLE::new_from((
-            self.new_opinion.candidate_object.value.clone(),
-            self.commit_cfg().value,
+            self.new_opinion.candidate_object.clone(),
+            self.commit_cfg(),
         ))
     }
 
@@ -345,8 +339,8 @@ impl<ObjLD: LatticeDef + 'static, Peer: DefTraits + 'static> Participant<ObjLD, 
         // Integrate proposal into internal state.
         let prop_opinion = Opinion {
             estimated_commit: self.new_opinion.estimated_commit.clone(),
-            proposed_configs: singleton_set(CfgLE::new_from(prop.config().clone())),
-            candidate_object: LatticeElt::new_from(prop.object().clone()),
+            proposed_configs: singleton_set(prop.config().clone()),
+            candidate_object: prop.object().clone(),
         };
         self.update_state(&prop_opinion);
 

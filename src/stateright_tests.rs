@@ -11,7 +11,7 @@ use stateright::actor::system::*;
 use stateright::actor::*;
 use stateright::checker::*;
 use stateright::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap,BTreeSet};
 
 type ObjLD = pergola::BitSetWithUnion;
 type ObjLE = pergola::LatticeElt<ObjLD>;
@@ -38,7 +38,7 @@ fn step_participant(participant: &mut Part, incoming: &Vec<Msg>, o: &mut Out<Con
                     from: from,
                     state: state.clone(),
                 };
-                for id in CfgLE::new_from(state.config().clone()).members().iter() {
+                for id in state.config().members().iter() {
                     o.send(*id, cm.clone())
                 }
             }
@@ -67,29 +67,27 @@ impl ConcordeActor {
 impl Actor for ConcordeActor {
     type Msg = Msg;
     type State = Part;
+    fn on_start(&self, id: Id, o: &mut Out<Self>) {
+        debug!("initializing {:?}", id);
 
-    fn init(i: InitIn<Self>, o: &mut Out<Self>) {
-        debug!("initializing {:?}", i.id);
-
-        // Silly assert: context ids are assigned by us, separately
-        // from stateright's assignment of InitIn ids, but they
+        // Silly assert: Actor ids are assigned by us, separately
+        // from stateright's assignment of on_start ids, but they
         // need to match up.
-        assert!(i.id == i.context.id);
-        let mut participant = Part::new(i.id);
-        if let Some(p) = &i.context.next_proposal(&participant) {
-            debug!("proposing on {:?}", i.id);
+        assert!(id == self.id);
+        let mut participant = Part::new(id);
+        if let Some(p) = &self.next_proposal(&participant) {
+            debug!("proposing on {:?}", id);
             participant.propose(p);
             step_participant(&mut participant, &vec![], o);
         }
         o.set_state(participant);
     }
 
-    fn next(i: NextIn<Self>, o: &mut Out<Self>) {
-        let Event::Receive(_, msg) = i.event;
-        debug!("next event on {:?}: recv {:?}", i.id, msg);
-        let mut st = i.state.clone();
-        if let Some(p) = &i.context.next_proposal(&st) {
-            debug!("proposing on {:?}", i.id);
+    fn on_msg(&self, id: Id, state: &Self::State, _src: Id, msg: Self::Msg, o: &mut Out<Self>) {
+        debug!("next event on {:?}: recv {:?}", id, msg);
+        let mut st = state.clone();
+        if let Some(p) = &self.next_proposal(&st) {
+            debug!("proposing on {:?}", id);
             st.propose(p);
         }
         step_participant(&mut st, &vec![msg], o);
@@ -97,35 +95,52 @@ impl Actor for ConcordeActor {
     }
 }
 
-fn system() -> System<ConcordeActor> {
-    let mut cfg = CfgLE::default();
-    let id0 = Id::from(0);
-    let id1 = Id::from(1);
-    let id2 = Id::from(2);
-    cfg.added_peers_mut().insert(id0);
-    cfg.added_peers_mut().insert(id1);
-    cfg.added_peers_mut().insert(id2);
+struct ConcordeSystem {
+    peer_proposals: BTreeMap<Id, Vec<StateLE<ObjLD, Id>>>
+}
 
-    let obj1 = ObjLE::new_from(BitSetWrapper(BitSet::from_bytes(&[0b1000_0000])));
-    let obj2 = ObjLE::new_from(BitSetWrapper(BitSet::from_bytes(&[0b0100_0000])));
+impl ConcordeSystem {
+    fn simple() -> ConcordeSystem {
+        let mut m = BTreeMap::new();
+        let mut cfg = CfgLE::default();
+        let id0 = Id::from(0);
+        let id1 = Id::from(1);
+        let id2 = Id::from(2);
+        cfg.added_peers_mut().insert(id0);
+        cfg.added_peers_mut().insert(id1);
+        cfg.added_peers_mut().insert(id2);
 
-    let actors = vec![
-        ConcordeActor {
-            id: id0,
-            proposals_to_make: vec![],
-        },
-        ConcordeActor {
-            id: id1,
-            proposals_to_make: vec![StateLE::new_from((obj1.value.clone(), cfg.value.clone()))],
-        },
-        ConcordeActor {
-            id: id2,
-            proposals_to_make: vec![StateLE::new_from((obj2.value.clone(), cfg.value.clone()))],
-        },
-    ];
-    let mut sys = System::with_actors(actors);
-    sys.duplicating_network = DuplicatingNetwork::No;
-    sys
+        let obj1 = ObjLE::new_from(BitSetWrapper(BitSet::from_bytes(&[0b1000_0000])));
+        let obj2 = ObjLE::new_from(BitSetWrapper(BitSet::from_bytes(&[0b0100_0000])));
+
+        m.insert(id0, vec![]);
+        m.insert(id1, vec![StateLE::new_from((obj1.clone(), cfg.clone()))]);
+        m.insert(id2, vec![StateLE::new_from((obj2.clone(), cfg.clone()))]);
+        ConcordeSystem { peer_proposals: m }
+    }
+}
+
+impl System for ConcordeSystem {
+    type Actor = ConcordeActor;
+    fn actors(&self) -> Vec<Self::Actor> {
+        self.peer_proposals.clone().into_iter()
+        .map(|(id, proposals_to_make)| ConcordeActor { id, proposals_to_make})
+        .collect()
+    }
+    fn lossy_network(&self) -> LossyNetwork { LossyNetwork::No }
+    fn duplicating_network(&self) -> DuplicatingNetwork { DuplicatingNetwork::No }
+    fn properties(&self) -> Vec<Property<SystemModel<Self>>> {
+        vec![
+            Property::always("valid", lattice_agreement_validity),
+            Property::always("consistent", lattice_agreement_consistency),
+            Property::eventually("live", lattice_agreement_liveness),
+            Property::always("trivial", |_, _| true),
+        ]
+    }
+    fn within_boundary(&self, state: &SystemState<Self::Actor>) -> bool {
+        lattice_agreement_boundary(self, state)
+    }
+
 }
 
 // Properties to check:
@@ -136,7 +151,7 @@ fn system() -> System<ConcordeActor> {
 // - liveness: every propose eventually finishes with a learn
 
 fn lattice_agreement_validity(
-    _sys: &System<ConcordeActor>,
+    _model: &SystemModel<ConcordeSystem>,
     state: &SystemState<ConcordeActor>,
 ) -> bool {
     let mut all_proposed_added_peers = BTreeSet::new();
@@ -144,14 +159,14 @@ fn lattice_agreement_validity(
     let mut all_proposed_bits = BitSet::new();
     for part in state.actor_states.iter() {
         for v in part.proposed_history.iter() {
-            let cfg = CfgLE::new_from(v.config().clone());
+            let cfg = v.config();
             for peer in cfg.added_peers().iter() {
                 all_proposed_added_peers.insert(peer.clone());
             }
             for peer in cfg.removed_peers().iter() {
                 all_proposed_removed_peers.insert(peer.clone());
             }
-            for bit in v.object().0.iter() {
+            for bit in v.object().value.0.iter() {
                 all_proposed_bits.insert(bit);
             }
         }
@@ -159,7 +174,7 @@ fn lattice_agreement_validity(
 
     for part in state.actor_states.iter() {
         for v in part.learned_history.iter() {
-            let cfg = CfgLE::new_from(v.config().clone());
+            let cfg = v.config();
             for peer in cfg.added_peers().iter() {
                 if !all_proposed_added_peers.contains(peer) {
                     return false;
@@ -170,7 +185,7 @@ fn lattice_agreement_validity(
                     return false;
                 }
             }
-            for bit in v.object().0.iter() {
+            for bit in v.object().value.0.iter() {
                 if !all_proposed_bits.contains(bit) {
                     return false;
                 }
@@ -181,7 +196,7 @@ fn lattice_agreement_validity(
 }
 
 fn lattice_agreement_consistency(
-    _sys: &System<ConcordeActor>,
+    _model: &SystemModel<ConcordeSystem>,
     state: &SystemState<ConcordeActor>,
 ) -> bool {
     for part in state.actor_states.iter() {
@@ -204,11 +219,11 @@ fn lattice_agreement_consistency(
 //
 // (Luckily this is how the liveness of lattice agreement is specified)
 fn lattice_agreement_liveness(
-    sys: &System<ConcordeActor>,
+    model: &SystemModel<ConcordeSystem>,
     state: &SystemState<ConcordeActor>,
 ) -> bool {
     for part in state.actor_states.iter() {
-        for actor in sys.actors.iter() {
+        for actor in model.actors.iter() {
             if actor.id == part.id {
                 let n = actor.proposals_to_make.len();
                 if !(part.proposed_history.len() == n && part.learned_history.len() == n) {
@@ -222,13 +237,14 @@ fn lattice_agreement_liveness(
 
 // Returning false here means "past the boundary, stop exploring"
 fn lattice_agreement_boundary(
-    sys: &System<ConcordeActor>,
+    system: &ConcordeSystem,
     state: &SystemState<ConcordeActor>,
 ) -> bool {
     for part in state.actor_states.iter() {
-        for actor in sys.actors.iter() {
-            if actor.id == part.id {
-                let n = actor.proposals_to_make.len();
+        match system.peer_proposals.get(&part.id) {
+            None => (),
+            Some(proposals) => {
+                let n = proposals.len();
                 if part.proposed_history.len() < n || part.learned_history.len() < n {
                     // 'true' means there's still work to do in at least one actor.
                     return true;
@@ -245,24 +261,11 @@ fn lattice_agreement_boundary(
     return false;
 }
 
-fn model(sys: System<ConcordeActor>) -> Model<'static, System<ConcordeActor>> {
-    Model {
-        state_machine: sys,
-        properties: vec![
-            Property::always("valid", lattice_agreement_validity),
-            Property::always("consistent", lattice_agreement_consistency),
-            Property::eventually("live", lattice_agreement_liveness),
-            Property::always("trivial", |_, _| true),
-        ],
-        boundary: Some(Box::new(lattice_agreement_boundary)),
-    }
-}
-
 #[cfg(test)]
 #[test]
 fn model_check() {
     let _ = pretty_env_logger::try_init();
-    let mut checker = model(system()).checker_with_threads(num_cpus::get());
+    let mut checker = ConcordeSystem::simple().into_model().checker_with_threads(num_cpus::get());
 
     // Oddly, due to a bug in cargo we shouldn't write to stdout because
     // it won't be swallowed by the test runner when running multithreaded
@@ -346,8 +349,8 @@ fn cfgs_to_string(cfgs: &ArcOrdSet<CfgLE<Id>>) -> String {
 fn state_to_string(state: &StateLE<ObjLD, Id>) -> String {
     format!(
         "[obj:{}, cfg:{}]",
-        obj_to_string(&ObjLE::new_from(state.object().clone())),
-        cfg_to_string(&CfgLE::new_from(state.config().clone()))
+        obj_to_string(state.object()),
+        cfg_to_string(state.config())
     )
 }
 
@@ -379,8 +382,8 @@ fn msg_to_string(msg: &Msg) -> String {
     }
 }
 
-fn print_system_state(state: &<System<ConcordeActor> as StateMachine>::State) {
-    println!("    state at depth {}:", state.depth);
+fn print_system_state(state: &SystemState<ConcordeActor>) {
+    // println!("    state at depth {}:", state.depth);
     for part in state.actor_states.iter() {
         println!("        participant {}:", usize::from(part.id));
         println!(
@@ -422,16 +425,17 @@ fn print_system_state(state: &<System<ConcordeActor> as StateMachine>::State) {
     }
 }
 
-fn print_system_action_opt(action: &Option<<System<ConcordeActor> as StateMachine>::Action>) {
+fn print_system_action_opt(action: &Option<SystemAction<Msg>>) {
     match action {
         None => println!("        None"),
+        Some(SystemAction::Timeout(_)) => println!("        timeout"),
         Some(SystemAction::Drop(envelope)) => println!(
             "        drop message {} -> {}: {}",
             usize::from(envelope.src),
             usize::from(envelope.dst),
             msg_to_string(&envelope.msg)
         ),
-        Some(SystemAction::Act(dst, Event::Receive(src, msg))) => println!(
+        Some(SystemAction::Deliver{src, dst, msg}) => println!(
             "        recv message {} -> {}: {}",
             usize::from(*src),
             usize::from(*dst),
@@ -442,8 +446,8 @@ fn print_system_action_opt(action: &Option<<System<ConcordeActor> as StateMachin
 
 fn print_path(
     path: Path<
-        <System<ConcordeActor> as StateMachine>::State,
-        <System<ConcordeActor> as StateMachine>::Action,
+        SystemState<ConcordeActor>,
+        SystemAction<Msg>,
     >,
 ) {
     for (i, (state, action)) in path.into_vec().iter().enumerate() {

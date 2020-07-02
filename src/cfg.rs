@@ -17,31 +17,53 @@ use im::OrdSet as ArcOrdSet;
 /// mind transmitting sets of, serialized, in messages.
 use pergola::{ArcOrdSetWithUnion, DefTraits, LatticeElt, Tuple2};
 
-pub type CfgLD<Peer> = Tuple2<ArcOrdSetWithUnion<Peer>, ArcOrdSetWithUnion<Peer>>;
+pub type PeerSetLD<Peer> = ArcOrdSetWithUnion<Peer>;
+pub type PeerSetLE<Peer> = LatticeElt<PeerSetLD<Peer>>;
+pub type CfgLD<Peer> = Tuple2<PeerSetLD<Peer>, PeerSetLD<Peer>>;
 pub type CfgLE<Peer> = LatticeElt<CfgLD<Peer>>;
 
 // Helper methods on the Cfg lattice elements.
 pub trait CfgLEExt<Peer: DefTraits> {
+    fn added_peers_elt(&self) -> &PeerSetLE<Peer>;
+    fn added_peers_elt_mut(&mut self) -> &mut PeerSetLE<Peer>;
     fn added_peers(&self) -> &ArcOrdSet<Peer>;
     fn added_peers_mut(&mut self) -> &mut ArcOrdSet<Peer>;
+
+    fn removed_peers_elt(&self) -> &PeerSetLE<Peer>;
+    fn removed_peers_elt_mut(&mut self) -> &mut PeerSetLE<Peer>;
     fn removed_peers(&self) -> &ArcOrdSet<Peer>;
     fn removed_peers_mut(&mut self) -> &mut ArcOrdSet<Peer>;
+
     fn members(&self) -> ArcOrdSet<Peer>;
 }
 
 impl<Peer: DefTraits> CfgLEExt<Peer> for CfgLE<Peer> {
-    fn added_peers(&self) -> &ArcOrdSet<Peer> {
+    fn added_peers_elt(&self) -> &PeerSetLE<Peer> {
         &self.value.0
     }
-    fn added_peers_mut(&mut self) -> &mut ArcOrdSet<Peer> {
+    fn added_peers_elt_mut(&mut self) -> &mut PeerSetLE<Peer> {
         &mut self.value.0
     }
-    fn removed_peers(&self) -> &ArcOrdSet<Peer> {
+    fn added_peers(&self) -> &ArcOrdSet<Peer> {
+        &self.added_peers_elt().value
+    }
+    fn added_peers_mut(&mut self) -> &mut ArcOrdSet<Peer> {
+        &mut self.added_peers_elt_mut().value
+    }
+
+    fn removed_peers_elt(&self) -> &PeerSetLE<Peer> {
         &self.value.1
     }
-    fn removed_peers_mut(&mut self) -> &mut ArcOrdSet<Peer> {
+    fn removed_peers_elt_mut(&mut self) -> &mut PeerSetLE<Peer> {
         &mut self.value.1
     }
+    fn removed_peers(&self) -> &ArcOrdSet<Peer> {
+        &self.removed_peers_elt().value
+    }
+    fn removed_peers_mut(&mut self) -> &mut ArcOrdSet<Peer> {
+        &mut self.removed_peers_elt_mut().value
+    }
+
     fn members(&self) -> ArcOrdSet<Peer> {
         self.added_peers()
             .clone()
