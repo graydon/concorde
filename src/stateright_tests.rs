@@ -122,6 +122,7 @@ impl ConcordeSystem {
 
 impl System for ConcordeSystem {
     type Actor = ConcordeActor;
+    type History = ();
     fn actors(&self) -> Vec<Self::Actor> {
         self.peer_proposals.clone().into_iter()
         .map(|(id, proposals_to_make)| ConcordeActor { id, proposals_to_make})
@@ -137,7 +138,7 @@ impl System for ConcordeSystem {
             Property::always("trivial", |_, _| true),
         ]
     }
-    fn within_boundary(&self, state: &SystemState<Self::Actor>) -> bool {
+    fn within_boundary(&self, state: &SystemState<Self>) -> bool {
         lattice_agreement_boundary(self, state)
     }
 
@@ -152,7 +153,7 @@ impl System for ConcordeSystem {
 
 fn lattice_agreement_validity(
     _model: &SystemModel<ConcordeSystem>,
-    state: &SystemState<ConcordeActor>,
+    state: &SystemState<ConcordeSystem>,
 ) -> bool {
     let mut all_proposed_added_peers = BTreeSet::new();
     let mut all_proposed_removed_peers = BTreeSet::new();
@@ -197,7 +198,7 @@ fn lattice_agreement_validity(
 
 fn lattice_agreement_consistency(
     _model: &SystemModel<ConcordeSystem>,
-    state: &SystemState<ConcordeActor>,
+    state: &SystemState<ConcordeSystem>,
 ) -> bool {
     for part in state.actor_states.iter() {
         let h = &part.learned_history;
@@ -220,7 +221,7 @@ fn lattice_agreement_consistency(
 // (Luckily this is how the liveness of lattice agreement is specified)
 fn lattice_agreement_liveness(
     model: &SystemModel<ConcordeSystem>,
-    state: &SystemState<ConcordeActor>,
+    state: &SystemState<ConcordeSystem>,
 ) -> bool {
     for part in state.actor_states.iter() {
         for actor in model.actors.iter() {
@@ -238,7 +239,7 @@ fn lattice_agreement_liveness(
 // Returning false here means "past the boundary, stop exploring"
 fn lattice_agreement_boundary(
     system: &ConcordeSystem,
-    state: &SystemState<ConcordeActor>,
+    state: &SystemState<ConcordeSystem>,
 ) -> bool {
     for part in state.actor_states.iter() {
         match system.peer_proposals.get(&part.id) {
@@ -382,7 +383,7 @@ fn msg_to_string(msg: &Msg) -> String {
     }
 }
 
-fn print_system_state(state: &SystemState<ConcordeActor>) {
+fn print_system_state(state: &SystemState<ConcordeSystem>) {
     // println!("    state at depth {}:", state.depth);
     for part in state.actor_states.iter() {
         println!("        participant {}:", usize::from(part.id));
@@ -446,7 +447,7 @@ fn print_system_action_opt(action: &Option<SystemAction<Msg>>) {
 
 fn print_path(
     path: Path<
-        SystemState<ConcordeActor>,
+        SystemState<ConcordeSystem>,
         SystemAction<Msg>,
     >,
 ) {
