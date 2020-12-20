@@ -106,3 +106,20 @@ fn run_sim() {
     n.add_peer("c".into());
     n.run();
 }
+
+#[test]
+fn manual_cfg_lattice_order() {
+    let cfg_default = CfgLE::<u8>::default();
+    let mut cfg_elts = cfg_default.clone();
+    cfg_elts.added_peers_mut().insert(1);
+    assert!(cfg_default <= cfg_elts);
+}
+
+#[test]
+fn manual_peerset_lattice_order() {
+    let ps_default = crate::cfg::PeerSetLE::<u8>::default();
+    let mut ps_elts = ps_default.clone();
+    ps_elts.value.insert(1);
+    assert!(ps_default <= ps_elts);
+    assert!(!(ps_default >= ps_elts));
+}

@@ -73,11 +73,14 @@ pub struct Participant<ObjLD: LatticeDef, Peer: DefTraits> {
     pub(crate) sequence_responses: ArcOrdSet<Peer>,
 
     // History variables, for purposes of model checking.
+    #[cfg(test)]
     pub(crate) proposed_history: Vec<StateLE<ObjLD, Peer>>,
+    #[cfg(test)]
     pub(crate) learned_history: Vec<StateLE<ObjLD, Peer>>,
 }
 
 impl<ObjLD: LatticeDef + 'static, Peer: DefTraits + 'static> Participant<ObjLD, Peer> {
+    #[cfg(test)]
     pub fn new(id: Peer) -> Self {
         Participant {
             id: id,
@@ -98,6 +101,23 @@ impl<ObjLD: LatticeDef + 'static, Peer: DefTraits + 'static> Participant<ObjLD, 
         }
     }
 
+    #[cfg(not(test))]
+    pub fn new(id: Peer) -> Self {
+        Participant {
+            id: id,
+            sequence: 0,
+            new_opinion: Opinion::default(),
+
+            propose_stage: ProposeStage::Init,
+            lower_bound: None,
+            final_state: None,
+
+            old_opinion: Opinion::default(),
+            all_possible_cfgs: ArcOrdSet::new(),
+            sequence_responses: ArcOrdSet::new(),
+        }
+    }
+
     fn update_state(&mut self, new_opinion: &Opinion<ObjLD, Peer>) {
         // Update the commit estimate.
         self.new_opinion.estimated_commit =
@@ -113,13 +133,12 @@ impl<ObjLD: LatticeDef + 'static, Peer: DefTraits + 'static> Participant<ObjLD, 
             .proposed_configs
             .clone()
             .union(new_opinion.proposed_configs.clone());
-        let commit_cfg: &CfgLE<Peer> =
-            self.new_opinion.estimated_commit.config();
+        let commit_cfg: &CfgLE<Peer> = self.new_opinion.estimated_commit.config();
         self.new_opinion.proposed_configs = self
             .new_opinion
             .proposed_configs
             .iter()
-            .filter(|u| { *u >= commit_cfg })
+            .filter(|u| *u >= commit_cfg)
             .cloned()
             .collect();
     }
@@ -181,10 +200,7 @@ impl<ObjLD: LatticeDef + 'static, Peer: DefTraits + 'static> Participant<ObjLD, 
     }
 
     fn commit_state(&self) -> StateLE<ObjLD, Peer> {
-        StateLE::new_from((
-            self.new_opinion.candidate_object.clone(),
-            self.commit_cfg(),
-        ))
+        StateLE::new_from((self.new_opinion.candidate_object.clone(), self.commit_cfg()))
     }
 
     fn advance_seq(&mut self) {
@@ -244,8 +260,16 @@ impl<ObjLD: LatticeDef + 'static, Peer: DefTraits + 'static> Participant<ObjLD, 
         }
     }
 
-    fn learn_state(&mut self, state: StateLE<ObjLD, Peer>) {
+    #[cfg(test)]
+    fn maybe_save_learned_state(&mut self, state: &StateLE<ObjLD, Peer>) {
         self.learned_history.push(state.clone());
+    }
+
+    #[cfg(not(test))]
+    fn maybe_save_learned_state(&mut self, _state: &StateLE<ObjLD, Peer>) {}
+
+    fn learn_state(&mut self, state: StateLE<ObjLD, Peer>) {
+        self.maybe_save_learned_state(&state);
         self.final_state = Some(state);
         self.propose_stage = ProposeStage::Fini;
     }
@@ -347,9 +371,17 @@ impl<ObjLD: LatticeDef + 'static, Peer: DefTraits + 'static> Participant<ObjLD, 
         // Transition to send stage (start of send/recv/pick loop).
         self.propose_stage = ProposeStage::Send;
 
+        self.maybe_save_proposal(prop);
+    }
+
+    #[cfg(test)]
+    fn maybe_save_proposal(&mut self, prop: &StateLE<ObjLD, Peer>) {
         // Record proposal in history variable.
         self.proposed_history.push(prop.clone());
     }
+
+    #[cfg(not(test))]
+    fn maybe_save_proposal(&mut self, _prop: &StateLE<ObjLD, Peer>) {}
 }
 // misc helpers
 

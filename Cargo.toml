@@ -12,7 +12,7 @@ readme = "README.md"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-pergola = "0.8.1"
+pergola = "0.9.0"
 itertools = "0.9.0"
 log = "0.4"
 im = "15.0.0"

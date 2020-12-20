@@ -11,7 +11,7 @@ use stateright::actor::system::*;
 use stateright::actor::*;
 use stateright::checker::*;
 use stateright::*;
-use std::collections::{BTreeMap,BTreeSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 type ObjLD = pergola::BitSetWithUnion;
 type ObjLE = pergola::LatticeElt<ObjLD>;
@@ -96,7 +96,7 @@ impl Actor for ConcordeActor {
 }
 
 struct ConcordeSystem {
-    peer_proposals: BTreeMap<Id, Vec<StateLE<ObjLD, Id>>>
+    peer_proposals: BTreeMap<Id, Vec<StateLE<ObjLD, Id>>>,
 }
 
 impl ConcordeSystem {
@@ -123,12 +123,21 @@ impl ConcordeSystem {
 impl System for ConcordeSystem {
     type Actor = ConcordeActor;
     fn actors(&self) -> Vec<Self::Actor> {
-        self.peer_proposals.clone().into_iter()
-        .map(|(id, proposals_to_make)| ConcordeActor { id, proposals_to_make})
-        .collect()
+        self.peer_proposals
+            .clone()
+            .into_iter()
+            .map(|(id, proposals_to_make)| ConcordeActor {
+                id,
+                proposals_to_make,
+            })
+            .collect()
     }
-    fn lossy_network(&self) -> LossyNetwork { LossyNetwork::No }
-    fn duplicating_network(&self) -> DuplicatingNetwork { DuplicatingNetwork::No }
+    fn lossy_network(&self) -> LossyNetwork {
+        LossyNetwork::No
+    }
+    fn duplicating_network(&self) -> DuplicatingNetwork {
+        DuplicatingNetwork::No
+    }
     fn properties(&self) -> Vec<Property<SystemModel<Self>>> {
         vec![
             Property::always("valid", lattice_agreement_validity),
@@ -140,7 +149,6 @@ impl System for ConcordeSystem {
     fn within_boundary(&self, state: &SystemState<Self::Actor>) -> bool {
         lattice_agreement_boundary(self, state)
     }
-
 }
 
 // Properties to check:
@@ -236,10 +244,7 @@ fn lattice_agreement_liveness(
 }
 
 // Returning false here means "past the boundary, stop exploring"
-fn lattice_agreement_boundary(
-    system: &ConcordeSystem,
-    state: &SystemState<ConcordeActor>,
-) -> bool {
+fn lattice_agreement_boundary(system: &ConcordeSystem, state: &SystemState<ConcordeActor>) -> bool {
     for part in state.actor_states.iter() {
         match system.peer_proposals.get(&part.id) {
             None => (),
@@ -265,7 +270,9 @@ fn lattice_agreement_boundary(
 #[test]
 fn model_check() {
     let _ = pretty_env_logger::try_init();
-    let mut checker = ConcordeSystem::simple().into_model().checker_with_threads(num_cpus::get());
+    let mut checker = ConcordeSystem::simple()
+        .into_model()
+        .checker_with_threads(num_cpus::get());
 
     // Oddly, due to a bug in cargo we shouldn't write to stdout because
     // it won't be swallowed by the test runner when running multithreaded
@@ -435,7 +442,7 @@ fn print_system_action_opt(action: &Option<SystemAction<Msg>>) {
             usize::from(envelope.dst),
             msg_to_string(&envelope.msg)
         ),
-        Some(SystemAction::Deliver{src, dst, msg}) => println!(
+        Some(SystemAction::Deliver { src, dst, msg }) => println!(
             "        recv message {} -> {}: {}",
             usize::from(*src),
             usize::from(*dst),
@@ -444,12 +451,7 @@ fn print_system_action_opt(action: &Option<SystemAction<Msg>>) {
     }
 }
 
-fn print_path(
-    path: Path<
-        SystemState<ConcordeActor>,
-        SystemAction<Msg>,
-    >,
-) {
+fn print_path(path: Path<SystemState<ConcordeActor>, SystemAction<Msg>>) {
     for (i, (state, action)) in path.into_vec().iter().enumerate() {
         println!("----");
         println!("step {}:", i);
