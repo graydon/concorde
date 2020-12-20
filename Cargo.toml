@@ -1,7 +1,7 @@
 [package]
 name = "concorde"
 description = "reconfigurable lattice agreement"
-version = "0.6.0"
+version = "0.6.1-alpha.0"
 authors = ["Graydon Hoare <graydon@pobox.com>"]
 edition = "2018"
 license = "MIT OR Apache-2.0"
