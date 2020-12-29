@@ -14,9 +14,11 @@ readme = "README.md"
 [dependencies]
 pergola = "0.9.0"
 itertools = "0.9.0"
-log = "0.4"
 im = "15.0.0"
 serde = "1.0"
+
+tracing = "0.1.22"
+tracing-subscriber = {version="0.2.15", features = ["chrono", "env-filter", "fmt"]}
 
 [dev-dependencies]
 futures = "0.3.5"

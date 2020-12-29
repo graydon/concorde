@@ -2,10 +2,10 @@
 // Licensed under the MIT and Apache-2.0 licenses.
 
 use crate::*;
-use log::debug;
 use pergola::{LatticeElt, MaxDef};
-use pretty_env_logger;
 use std::collections::BTreeMap;
+use tracing::debug;
+use tracing_subscriber;
 
 type Peer = String;
 type ObjLD = MaxDef<u16>;
@@ -99,7 +99,7 @@ impl Network {
 
 #[test]
 fn run_sim() {
-    let _ = pretty_env_logger::try_init();
+    let _ = tracing_subscriber::fmt::try_init();
     let mut n = Network::default();
     n.add_peer("a".into());
     n.add_peer("b".into());
@@ -109,6 +109,7 @@ fn run_sim() {
 
 #[test]
 fn manual_cfg_lattice_order() {
+    let _ = tracing_subscriber::fmt::try_init();
     let cfg_default = CfgLE::<u8>::default();
     let mut cfg_elts = cfg_default.clone();
     cfg_elts.added_peers_mut().insert(1);
@@ -117,6 +118,7 @@ fn manual_cfg_lattice_order() {
 
 #[test]
 fn manual_peerset_lattice_order() {
+    let _ = tracing_subscriber::fmt::try_init();
     let ps_default = crate::cfg::PeerSetLE::<u8>::default();
     let mut ps_elts = ps_default.clone();
     ps_elts.value.insert(1);

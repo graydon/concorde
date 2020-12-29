@@ -4,10 +4,10 @@
 use crate::{CfgLE, CfgLEExt, Message, Opinion, StateLE, StateLEExt};
 use im::OrdSet as ArcOrdSet;
 use itertools::Itertools;
-use log::{debug, trace};
 use pergola::{DefTraits, LatticeDef};
 use std::fmt::Debug;
 use std::hash::Hash;
+use tracing::trace;
 
 // Participants _could_ be implemented using async/await (and indeed earlier
 // versions were) but doing so makes it impossible to capture, inspect, clone,
@@ -279,14 +279,14 @@ impl<ObjLD: LatticeDef + 'static, Peer: DefTraits + 'static> Participant<ObjLD, 
             .new_opinion
             .same_estimated_and_proposed_configs(&self.old_opinion)
         {
-            debug!("peer {:?} found stable configuration", self.id);
+            trace!("peer {:?} found stable configuration", self.id);
             let cstate = self.commit_state();
             if self.lower_bound == None {
                 self.lower_bound = Some(cstate.clone())
             }
             // No greater object received.
             if self.old_opinion.candidate_object == self.new_opinion.candidate_object {
-                debug!(
+                trace!(
                     "peer {:?} stable config has stable object, broadcasting and finishing",
                     self.id
                 );
@@ -302,7 +302,7 @@ impl<ObjLD: LatticeDef + 'static, Peer: DefTraits + 'static> Participant<ObjLD, 
         match &self.lower_bound {
             Some(state) if state <= &self.new_opinion.estimated_commit => {
                 // Adopt learned state.
-                debug!(
+                trace!(
                     "peer {:?} stable config has acceptable lower bound, finishing",
                     self.id
                 );

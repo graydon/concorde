@@ -4,7 +4,6 @@
 use crate::{CfgLE, CfgLEExt, Message, Opinion, Participant, StateLE, StateLEExt};
 use bit_set::BitSet;
 use im::OrdSet as ArcOrdSet;
-use log::debug;
 use pergola::BitSetWrapper;
 use pretty_env_logger;
 use stateright::actor::system::*;
@@ -12,6 +11,7 @@ use stateright::actor::*;
 use stateright::checker::*;
 use stateright::*;
 use std::collections::{BTreeMap, BTreeSet};
+use tracing::debug;
 
 type ObjLD = pergola::BitSetWithUnion;
 type ObjLE = pergola::LatticeElt<ObjLD>;
